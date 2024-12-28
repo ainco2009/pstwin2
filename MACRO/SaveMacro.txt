@@ -1,0 +1,22 @@
+'Macro Formato'
+' 
+Sub Formato(ByVal Target As Range)
+' 
+Dim strFórmula As String 'Se usa sólo para saber si target.cells(1,1) tiene validación 
+Set Target = Target.Cells(1, 1) 
+' 
+'Averiguar si la celda tiene una validación y salir si no la tiene 
+On Error GoTo captura 
+strFórmula = Target.Validation.Formula1 
+On Error Resume Next 
+' 
+Application.EnableEvents = False 
+WorksheetFunction.Index(Range(Target.Validation.Formula1), WorksheetFunction.Match(Target.Value, Range(Target.Validation.Formula1), 0), 1).Copy 
+Target.PasteSpecial Paste:=xlPasteFormats 
+Application.EnableEvents = True
+Application.CutCopyMode = False 
+' 
+Exit Sub 
+captura: 
+If Err.Number = 1004 Then Exit Sub Else MsgBox Err.Number & " - " & Err.Description 
+End Sub 

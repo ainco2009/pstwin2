@@ -1,0 +1,11 @@
+
+SELECT CONTBNLA.Cedula,CONTBNLA.Cod_casa,CONTBNLA.Num_contra,;
+    CONTBNLA.Relainclus,CONTBNLA.Fec_contra,CONTBNLA.Mon_contra,;
+    CONTBNLA.Fec_vigenc,CONTBNLA.Modalidad,CONTBNLA.Num_cuotas,;
+    CONTBNLA.Mon_cuotas,CONTBNLA.Codigo_org,CONTBNLA.Fec_envio,;
+    CONTBNLA.Fec_ult_md,CONTBNLA.Fec_anulac,CONTBNLA.Cts_pagada,;
+    CONTBNLA.Saldo,CONTBNLA.Fec_ult_pg,CONTBNLA.Cts_morosa,;
+    CONTBNLA.Fecha_proceso;
+    FROM BASEBNLA!CONTBNLA CONTBNLA;
+    WHERE (CONTBNLA.CEDULA='EMPMBNLA.CEDULA');
+    ORDER BY CONTBNLA.Fec_vigenc

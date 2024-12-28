@@ -1,0 +1,2025 @@
+*** WARNING *** DO NOT MODIFY THIS FILE IN ANY WAY! *** WARNING ***
+
+**__RI_HEADER!@ Do NOT REMOVE or MODIFY this line!!!! @!__RI_HEADER**
+procedure RIDELETE
+local llRetVal
+llRetVal=.t.
+ IF (ISRLOCKED() and !deleted()) OR !RLOCK()
+    llRetVal=.F.
+  ELSE
+    IF !deleted()
+      DELETE
+      IF CURSORGETPROP('BUFFERING') > 1
+      	=TABLEUPDATE()
+      ENDIF
+    ENDIF not already deleted
+  ENDIF
+  UNLOCK RECORD (RECNO())
+  llRetVal=pnerror=0
+RETURN llRetVal
+
+procedure RIUPDATE
+lparameters tcFieldName,tcNewValue,tcCascadeParent
+local llRetVal
+llRetVal=.t.
+ IF ISRLOCKED() OR !RLOCK()
+    llRetVal=.F.
+  ELSE
+    IF EVAL(tcFieldName)<>tcNewValue
+      PRIVATE pcCascadeParent
+      pcCascadeParent=upper(iif(type("tcCascadeParent")<>"C","",tcCascadeParent))
+      REPLACE (tcFieldName) WITH tcNewValue
+      IF CURSORGETPROP('BUFFERING') > 1
+      	=TABLEUPDATE()
+      ENDIF
+    ENDIF values don't already match
+  ENDIF it's locked already, or I was able to lock it
+  UNLOCK RECORD (RECNO())
+  llRetVal=pnerror=0
+return llRetVal
+
+procedure rierror
+parameters tnErrNo,tcMessage,tcCode,tcProgram
+local lnErrorRows,lnXX
+lnErrorRows=alen(gaErrors,1)
+if type('gaErrors[lnErrorRows,1]')<>"L"
+  dimension gaErrors[lnErrorRows+1,alen(gaErrors,2)]
+  lnErrorRows=lnErrorRows+1
+endif
+gaErrors[lnErrorRows,1]=tnErrNo
+gaErrors[lnErrorRows,2]=tcMessage
+gaErrors[lnErrorRows,3]=tcCode
+gaErrors[lnErrorRows,4]=""
+lnXX=1
+do while !empty(program(lnXX))
+  gaErrors[lnErrorRows,4]=gaErrors[lnErrorRows,4]+","+;
+  program(lnXX)
+  lnXX=lnXX+1
+enddo
+gaErrors[lnErrorRows,5]=pcParentDBF
+gaErrors[lnErrorRows,6]=pnParentRec
+gaErrors[lnErrorRows,7]=pcParentID
+gaErrors[lnErrorRows,8]=pcParentExpr
+gaErrors[lnErrorRows,9]=pcChildDBF
+gaErrors[lnErrorRows,10]=pnChildRec
+gaErrors[lnErrorRows,11]=pcChildID
+gaErrors[lnErrorRows,12]=pcChildExpr
+return tnErrNo
+
+
+PROCEDURE riopen
+PARAMETERS tcTable,tcOrder
+
+LOCAL lcCurWkArea,lcNewWkArea,lnInUseSpot,lnOccurs,lnOccurance
+lnInUseSpot=0
+lnOccurs = OCCURS(UPPER(tcTable)+"*",UPPER(pcRIcursors))
+FOR lnOccurance = 1 TO lnOccurs
+	lnInUseSpot=ATC(tcTable+"*",pcRIcursors,lnOccurance)
+	IF ISDIGIT(SUBSTR(pcRIcursors,lnInUseSpot-1,1)) OR;
+		 EMPTY(SUBSTR(pcRIcursors,lnInUseSpot-1,1))
+		EXIT
+	ENDIF
+	lnInUseSpot=0
+ENDFOR
+
+IF lnInUseSpot=0
+  lcCurWkArea=select()
+  SELECT 0
+  lcNewWkArea=select()
+  IF NOT EMPTY(tcOrder)
+    USE (tcTable) AGAIN ORDER (tcOrder) ;
+      ALIAS ("__ri"+LTRIM(STR(SELECT()))) share
+  ELSE
+    USE (tcTable) AGAIN ALIAS ("__ri"+LTRIM(STR(SELECT()))) share
+  ENDIF
+  if pnerror=0
+    pcRIcursors=pcRIcursors+upper(tcTable)+"?"+STR(SELECT(),5)
+  else
+    lcNewWkArea=0
+  endif something bad happened while attempting to open the file
+ELSE
+  lcNewWkArea=val(substr(pcRIcursors,lnInUseSpot+len(tcTable)+1,5))
+  pcRIcursors = strtran(pcRIcursors,upper(tcTable)+"*"+str(lcNewWkArea,5),;
+    upper(tcTable)+"?"+str(lcNewWkArea,5))
+  IF NOT EMPTY(tcOrder)
+    SET ORDER TO (tcOrder) IN (lcNewWkArea)
+  ENDIF sent an order
+  if pnerror<>0
+    lcNewWkArea=0
+  endif something bad happened while setting order
+ENDIF
+RETURN (lcNewWkArea)
+
+
+PROCEDURE riend
+PARAMETERS tlSuccess
+local lnXX,lnSpot,lcWorkArea
+IF tlSuccess
+  END TRANSACTION
+ELSE
+  SET DELETED OFF
+  ROLLBACK
+  SET DELETED ON
+ENDIF
+IF EMPTY(pcRIolderror)
+  ON ERROR
+ELSE
+  ON ERROR &pcRIolderror.
+ENDIF
+FOR lnXX=1 TO occurs("*",pcRIcursors)
+  lnSpot=atc("*",pcRIcursors,lnXX)+1
+  USE IN (VAL(substr(pcRIcursors,lnSpot,5)))
+ENDFOR
+IF pcOldCompat = "ON"
+	SET COMPATIBLE ON
+ENDIF
+IF pcOldDele="OFF"
+  SET DELETED OFF
+ENDIF
+IF pcOldExact="ON"
+  SET EXACT ON
+ENDIF
+IF pcOldTalk="ON"
+  SET TALK ON
+ENDIF
+do case
+  case empty(pcOldDBC)
+    set data to
+  case pcOldDBC<>DBC()
+    set data to (pcOldDBC)
+endcase
+RETURN .T.
+
+
+PROCEDURE rireuse
+* rireuse.prg
+PARAMETERS tcTableName,tcWkArea
+pcRIcursors = strtran(pcRIcursors,upper(tcTableName)+"?"+str(tcWkArea,5),;
+  upper(tcTableName)+"*"+str(tcWkArea,5))
+RETURN .t.
+
+********************************************************************************
+** "Referential integrity delete trigger for" contbnla
+PROCEDURE __RI_DELETE_contbnla
+LOCAL llRetVal
+llRetVal = .t.
+PRIVATE pcParentDBF,pnParentRec,pcChildDBF,pnChildRec,pcParentID,pcChildID
+PRIVATE pcParentExpr,pcChildExpr
+STORE "" TO pcParentDBF,pcChildDBF,pcParentID,pcChildID,pcParentExpr,pcChildExpr
+STORE 0 TO pnParentRec,pnChildRec
+IF _triggerlevel=1
+  BEGIN TRANSACTION
+  PRIVATE pcRIcursors,pcRIwkareas,pcRIolderror,pnerror,;
+  pcOldDele,pcOldExact,pcOldTalk,pcOldCompat,PcOldDBC
+  pcOldTalk=SET("TALK")
+  SET TALK OFF
+  pcOldDele=SET("DELETED")
+  pcOldExact=SET("EXACT")
+  pcOldCompat=SET("COMPATIBLE")
+  SET COMPATIBLE OFF
+  SET DELETED ON
+  SET EXACT OFF
+  pcRIcursors=""
+  pcRIwkareas=""
+  pcRIolderror=ON("error")
+  pnerror=0
+  ON ERROR pnerror=rierror(ERROR(),message(),message(1),program())
+  IF TYPE('gaErrors(1)')<>"U"
+    release gaErrors
+  ENDIF
+  PUBLIC gaErrors(1,12)
+  pcOldDBC=DBC()
+  SET DATA TO ("BASEBNLA")
+ENDIF first trigger
+LOCAL lcParentID && parent's value to be sought in child
+LOCAL lcChildWkArea && child work area handle returned by riopen
+LOCAL lcParentWkArea
+LOCAL llDelHeaderarea
+LOCAL lcStartArea
+lcStartArea=select()
+llRetVal=.t.
+lcParentWkArea=select()
+SELECT (lcParentWkArea)
+pcParentDBF=dbf()
+pnParentRec=recno()
+STORE CEDULA+COD_CASA+NUM_CONTRA TO lcParentID,pcParentID
+pcParentExpr="CEDULA+COD_CASA+NUM_CONTRA"
+lcChildWkArea=riopen("transpago","tracedcasa")
+IF lcChildWkArea<=0
+  IF _triggerlevel=1
+    DO riend WITH .F.
+  ENDIF at the end of the highest trigger level
+  RETURN .F.
+ENDIF not able to open the child work area
+pcChildDBF=dbf(lcChildWkArea)
+SELECT (lcChildWkArea)
+SEEK lcParentID
+SCAN WHILE CEDULA+COD_CASA+NUM_CONTRA=lcParentID AND llRetVal
+  pnChildRec=recno()
+  pcChildID=CEDULA+COD_CASA+NUM_CONTRA
+  pcChildExpr="CEDULA+COD_CASA+NUM_CONTRA"
+  llRetVal=ridelete()
+ENDSCAN get all of the transpago records
+=rireuse("transpago",lcChildWkArea)
+IF NOT llRetVal
+  IF _triggerlevel=1
+    DO riend WITH llRetVal
+  ENDIF at the end of the highest trigger level
+  SELECT (lcStartArea)
+  RETURN llRetVal
+ENDIF
+IF _triggerlevel=1
+  do riend with llRetVal
+ENDIF at the end of the highest trigger level
+SELECT (lcStartArea)
+RETURN llRetVal
+** "End of Referential integrity Delete trigger for" contbnla
+********************************************************************************
+
+********************************************************************************
+procedure __RI_UPDATE_contbnla
+** "Referential integrity update trigger for" contbnla
+LOCAL llRetVal
+llRetVal = .t.
+PRIVATE pcParentDBF,pnParentRec,pcChildDBF,pnChildRec,pcParentID,pcChildID
+PRIVATE pcParentExpr,pcChildExpr
+STORE "" TO pcParentDBF,pcChildDBF,pcParentID,pcChildID,pcParentExpr,pcChildExpr
+STORE 0 TO pnParentRec,pnChildRec
+IF _triggerlevel=1
+  BEGIN TRANSACTION
+  PRIVATE pcRIcursors,pcRIwkareas,pcRIolderror,pnerror,;
+  pcOldDele,pcOldExact,pcOldTalk,pcOldCompat,PcOldDBC
+  pcOldTalk=SET("TALK")
+  SET TALK OFF
+  pcOldDele=SET("DELETED")
+  pcOldExact=SET("EXACT")
+  pcOldCompat=SET("COMPATIBLE")
+  SET COMPATIBLE OFF
+  SET DELETED ON
+  SET EXACT OFF
+  pcRIcursors=""
+  pcRIwkareas=""
+  pcRIolderror=ON("error")
+  pnerror=0
+  ON ERROR pnerror=rierror(ERROR(),message(),message(1),program())
+  IF TYPE('gaErrors(1)')<>"U"
+    release gaErrors
+  ENDIF
+  PUBLIC gaErrors(1,12)
+  pcOldDBC=DBC()
+  SET DATA TO ("BASEBNLA")
+ENDIF first trigger
+LOCAL lcParentID && parent's value to be sought in child
+LOCAL lcOldParentID && previous parent id value
+LOCAL lcChildWkArea && child work area handle returned by riopen
+LOCAL lcChildID && child's value to be sought in parent
+LOCAL lcOldChildID && old child id value
+LOCAL lcParentWkArea && parentwork area handle returned by riopen
+LOCAL lcStartArea
+lcStartArea=select()
+llRetVal=.t.
+lcParentWkArea=select()
+SELECT (lcParentWkArea)
+pcParentDBF=dbf()
+pnParentRec=recno()
+lcOldParentID=OLDVAL("CEDULA+COD_CASA+NUM_CONTRA")
+pcParentID=lcOldParentID
+pcParentExpr="CEDULA+COD_CASA+NUM_CONTRA"
+lcParentID=CEDULA+COD_CASA+NUM_CONTRA
+IF lcParentID<>lcOldParentID
+  lcChildWkArea=riopen("rechazos")
+  IF lcChildWkArea<=0
+    IF _triggerlevel=1
+      DO riend WITH .F.
+    ENDIF at the end of the highest trigger level
+    SELECT (lcStartArea)
+    RETURN .F.
+  ENDIF not able to open the child work area
+  pcChildDBF=dbf(lcChildWkArea)
+  SELECT (lcChildWkArea)
+  SCAN FOR CEDULA+COD_CASA+NUM_CONTRA=lcOldParentID
+    pnChildRec=recno()
+    pcChildID=CEDULA+COD_CASA+NUM_CONTRA
+    pcChildExpr="CEDULA+COD_CASA+NUM_CONTRA"
+    llRetVal=riupdate("CEDULA",substr(lcParentID,1,9),"contbnla")
+    IF NOT llRetVal
+      EXIT
+    ENDIF && not llretval
+    llRetVal=riupdate("COD_CASA",substr(lcParentID,10,4),"contbnla")
+    IF NOT llRetVal
+      EXIT
+    ENDIF && not llretval
+    llRetVal=riupdate("NUM_CONTRA",substr(lcParentID,14,8),"contbnla")
+    IF NOT llRetVal
+      EXIT
+    ENDIF && not llretval
+  ENDSCAN get all of the rechazos records
+  =rireuse("rechazos",lcChildWkArea)
+  IF NOT llRetVal
+    IF _triggerlevel=1
+      DO riend WITH llRetVal
+    ENDIF at the end of the highest trigger level
+    SELECT (lcStartArea)
+    RETURN llRetVal
+  ENDIF
+ENDIF this parent id changed
+SELECT (lcParentWkArea)
+pcParentDBF=dbf()
+pnParentRec=recno()
+lcOldParentID=OLDVAL("CEDULA+COD_CASA+NUM_CONTRA")
+pcParentID=lcOldParentID
+pcParentExpr="CEDULA+COD_CASA+NUM_CONTRA"
+lcParentID=CEDULA+COD_CASA+NUM_CONTRA
+IF lcParentID<>lcOldParentID
+  lcChildWkArea=riopen("descbnla")
+  IF lcChildWkArea<=0
+    IF _triggerlevel=1
+      DO riend WITH .F.
+    ENDIF at the end of the highest trigger level
+    SELECT (lcStartArea)
+    RETURN .F.
+  ENDIF not able to open the child work area
+  pcChildDBF=dbf(lcChildWkArea)
+  SELECT (lcChildWkArea)
+  SCAN FOR CEDULA+COD_CASA+NUM_CONTRA=lcOldParentID
+    pnChildRec=recno()
+    pcChildID=CEDULA+COD_CASA+NUM_CONTRA
+    pcChildExpr="CEDULA+COD_CASA+NUM_CONTRA"
+    llRetVal=riupdate("CEDULA",substr(lcParentID,1,9),"contbnla")
+    IF NOT llRetVal
+      EXIT
+    ENDIF && not llretval
+    llRetVal=riupdate("COD_CASA",substr(lcParentID,10,4),"contbnla")
+    IF NOT llRetVal
+      EXIT
+    ENDIF && not llretval
+    llRetVal=riupdate("NUM_CONTRA",substr(lcParentID,14,8),"contbnla")
+    IF NOT llRetVal
+      EXIT
+    ENDIF && not llretval
+  ENDSCAN get all of the descbnla records
+  =rireuse("descbnla",lcChildWkArea)
+  IF NOT llRetVal
+    IF _triggerlevel=1
+      DO riend WITH llRetVal
+    ENDIF at the end of the highest trigger level
+    SELECT (lcStartArea)
+    RETURN llRetVal
+  ENDIF
+ENDIF this parent id changed
+SELECT (lcParentWkArea)
+pcParentDBF=dbf()
+pnParentRec=recno()
+lcOldParentID=OLDVAL("CEDULA+COD_CASA+NUM_CONTRA")
+pcParentID=lcOldParentID
+pcParentExpr="CEDULA+COD_CASA+NUM_CONTRA"
+lcParentID=CEDULA+COD_CASA+NUM_CONTRA
+IF lcParentID<>lcOldParentID
+  lcChildWkArea=riopen("transpago")
+  IF lcChildWkArea<=0
+    IF _triggerlevel=1
+      DO riend WITH .F.
+    ENDIF at the end of the highest trigger level
+    SELECT (lcStartArea)
+    RETURN .F.
+  ENDIF not able to open the child work area
+  pcChildDBF=dbf(lcChildWkArea)
+  SELECT (lcChildWkArea)
+  SCAN FOR CEDULA+COD_CASA+NUM_CONTRA=lcOldParentID
+    pnChildRec=recno()
+    pcChildID=CEDULA+COD_CASA+NUM_CONTRA
+    pcChildExpr="CEDULA+COD_CASA+NUM_CONTRA"
+    llRetVal=riupdate("CEDULA",substr(lcParentID,1,9),"contbnla")
+    IF NOT llRetVal
+      EXIT
+    ENDIF && not llretval
+    llRetVal=riupdate("COD_CASA",substr(lcParentID,10,4),"contbnla")
+    IF NOT llRetVal
+      EXIT
+    ENDIF && not llretval
+    llRetVal=riupdate("NUM_CONTRA",substr(lcParentID,14,8),"contbnla")
+    IF NOT llRetVal
+      EXIT
+    ENDIF && not llretval
+  ENDSCAN get all of the transpago records
+  =rireuse("transpago",lcChildWkArea)
+  IF NOT llRetVal
+    IF _triggerlevel=1
+      DO riend WITH llRetVal
+    ENDIF at the end of the highest trigger level
+    SELECT (lcStartArea)
+    RETURN llRetVal
+  ENDIF
+ENDIF this parent id changed
+SELECT (lcParentWkArea)
+pcParentDBF=dbf()
+pnParentRec=recno()
+lcOldParentID=OLDVAL("CEDULA+COD_CASA+NUM_CONTRA")
+pcParentID=lcOldParentID
+pcParentExpr="CEDULA+COD_CASA+NUM_CONTRA"
+lcParentID=CEDULA+COD_CASA+NUM_CONTRA
+IF lcParentID<>lcOldParentID
+  lcChildWkArea=riopen("enviodet")
+  IF lcChildWkArea<=0
+    IF _triggerlevel=1
+      DO riend WITH .F.
+    ENDIF at the end of the highest trigger level
+    SELECT (lcStartArea)
+    RETURN .F.
+  ENDIF not able to open the child work area
+  pcChildDBF=dbf(lcChildWkArea)
+  SELECT (lcChildWkArea)
+  SCAN FOR CEDULA+COD_CASA+NUM_CONTRA=lcOldParentID
+    pnChildRec=recno()
+    pcChildID=CEDULA+COD_CASA+NUM_CONTRA
+    pcChildExpr="CEDULA+COD_CASA+NUM_CONTRA"
+    llRetVal=riupdate("CEDULA",substr(lcParentID,1,9),"contbnla")
+    IF NOT llRetVal
+      EXIT
+    ENDIF && not llretval
+    llRetVal=riupdate("COD_CASA",substr(lcParentID,10,4),"contbnla")
+    IF NOT llRetVal
+      EXIT
+    ENDIF && not llretval
+    llRetVal=riupdate("NUM_CONTRA",substr(lcParentID,14,8),"contbnla")
+    IF NOT llRetVal
+      EXIT
+    ENDIF && not llretval
+  ENDSCAN get all of the enviodet records
+  =rireuse("enviodet",lcChildWkArea)
+  IF NOT llRetVal
+    IF _triggerlevel=1
+      DO riend WITH llRetVal
+    ENDIF at the end of the highest trigger level
+    SELECT (lcStartArea)
+    RETURN llRetVal
+  ENDIF
+ENDIF this parent id changed
+IF _triggerlevel=1
+  do riend with llRetVal
+ENDIF at the end of the highest trigger level
+SELECT (lcStartArea)
+RETURN llRetVal
+** "End of Referential integrity Update trigger for" contbnla
+********************************************************************************
+
+********************************************************************************
+** "Referential integrity delete trigger for" emplbnla
+PROCEDURE __RI_DELETE_emplbnla
+LOCAL llRetVal
+llRetVal = .t.
+PRIVATE pcParentDBF,pnParentRec,pcChildDBF,pnChildRec,pcParentID,pcChildID
+PRIVATE pcParentExpr,pcChildExpr
+STORE "" TO pcParentDBF,pcChildDBF,pcParentID,pcChildID,pcParentExpr,pcChildExpr
+STORE 0 TO pnParentRec,pnChildRec
+IF _triggerlevel=1
+  BEGIN TRANSACTION
+  PRIVATE pcRIcursors,pcRIwkareas,pcRIolderror,pnerror,;
+  pcOldDele,pcOldExact,pcOldTalk,pcOldCompat,PcOldDBC
+  pcOldTalk=SET("TALK")
+  SET TALK OFF
+  pcOldDele=SET("DELETED")
+  pcOldExact=SET("EXACT")
+  pcOldCompat=SET("COMPATIBLE")
+  SET COMPATIBLE OFF
+  SET DELETED ON
+  SET EXACT OFF
+  pcRIcursors=""
+  pcRIwkareas=""
+  pcRIolderror=ON("error")
+  pnerror=0
+  ON ERROR pnerror=rierror(ERROR(),message(),message(1),program())
+  IF TYPE('gaErrors(1)')<>"U"
+    release gaErrors
+  ENDIF
+  PUBLIC gaErrors(1,12)
+  pcOldDBC=DBC()
+  SET DATA TO ("BASEBNLA")
+ENDIF first trigger
+LOCAL lcParentID && parent's value to be sought in child
+LOCAL lcChildWkArea && child work area handle returned by riopen
+LOCAL lcParentWkArea
+LOCAL llDelHeaderarea
+LOCAL lcStartArea
+lcStartArea=select()
+llRetVal=.t.
+lcParentWkArea=select()
+SELECT (lcParentWkArea)
+pcParentDBF=dbf()
+pnParentRec=recno()
+STORE CEDULA TO lcParentID,pcParentID
+pcParentExpr="CEDULA"
+lcChildWkArea=riopen("contbnla","concbnla")
+IF lcChildWkArea<=0
+  IF _triggerlevel=1
+    DO riend WITH .F.
+  ENDIF at the end of the highest trigger level
+  RETURN .F.
+ENDIF not able to open the child work area
+pcChildDBF=dbf(lcChildWkArea)
+llRetVal=!SEEK(lcParentID,lcChildWkArea)
+SELECT (lcChildWkArea)
+pnChildRec=recno()
+pcChildID=CEDULA
+pcChildExpr="CEDULA"
+IF !llRetVal
+  pnError = rierror(-1,"Delete restrict rule violated.","","")
+ENDIF
+=rireuse("contbnla",lcChildWkArea)
+IF NOT llRetVal
+  IF _triggerlevel=1
+    DO riend WITH llRetVal
+  ENDIF at the end of the highest trigger level
+  SELECT (lcStartArea)
+  RETURN llRetVal
+ENDIF
+SELECT (lcParentWkArea)
+pcParentDBF=dbf()
+pnParentRec=recno()
+STORE CEDULA TO lcParentID,pcParentID
+pcParentExpr="CEDULA"
+lcChildWkArea=riopen("histrans","histranced")
+IF lcChildWkArea<=0
+  IF _triggerlevel=1
+    DO riend WITH .F.
+  ENDIF at the end of the highest trigger level
+  RETURN .F.
+ENDIF not able to open the child work area
+pcChildDBF=dbf(lcChildWkArea)
+SELECT (lcChildWkArea)
+SEEK lcParentID
+SCAN WHILE CEDULA=lcParentID AND llRetVal
+  pnChildRec=recno()
+  pcChildID=CEDULA
+  pcChildExpr="CEDULA"
+  llRetVal=ridelete()
+ENDSCAN get all of the histrans records
+=rireuse("histrans",lcChildWkArea)
+IF NOT llRetVal
+  IF _triggerlevel=1
+    DO riend WITH llRetVal
+  ENDIF at the end of the highest trigger level
+  SELECT (lcStartArea)
+  RETURN llRetVal
+ENDIF
+SELECT (lcParentWkArea)
+pcParentDBF=dbf()
+pnParentRec=recno()
+STORE CEDULA TO lcParentID,pcParentID
+pcParentExpr="CEDULA"
+lcChildWkArea=riopen("histcont","histconced")
+IF lcChildWkArea<=0
+  IF _triggerlevel=1
+    DO riend WITH .F.
+  ENDIF at the end of the highest trigger level
+  RETURN .F.
+ENDIF not able to open the child work area
+pcChildDBF=dbf(lcChildWkArea)
+SELECT (lcChildWkArea)
+SEEK lcParentID
+SCAN WHILE CEDULA=lcParentID AND llRetVal
+  pnChildRec=recno()
+  pcChildID=CEDULA
+  pcChildExpr="CEDULA"
+  llRetVal=ridelete()
+ENDSCAN get all of the histcont records
+=rireuse("histcont",lcChildWkArea)
+IF NOT llRetVal
+  IF _triggerlevel=1
+    DO riend WITH llRetVal
+  ENDIF at the end of the highest trigger level
+  SELECT (lcStartArea)
+  RETURN llRetVal
+ENDIF
+SELECT (lcParentWkArea)
+pcParentDBF=dbf()
+pnParentRec=recno()
+STORE CEDULA TO lcParentID,pcParentID
+pcParentExpr="CEDULA"
+lcChildWkArea=riopen("rechazos","rechazos")
+IF lcChildWkArea<=0
+  IF _triggerlevel=1
+    DO riend WITH .F.
+  ENDIF at the end of the highest trigger level
+  RETURN .F.
+ENDIF not able to open the child work area
+pcChildDBF=dbf(lcChildWkArea)
+SELECT (lcChildWkArea)
+SEEK lcParentID
+SCAN WHILE CEDULA=lcParentID AND llRetVal
+  pnChildRec=recno()
+  pcChildID=CEDULA
+  pcChildExpr="CEDULA"
+  llRetVal=ridelete()
+ENDSCAN get all of the rechazos records
+=rireuse("rechazos",lcChildWkArea)
+IF NOT llRetVal
+  IF _triggerlevel=1
+    DO riend WITH llRetVal
+  ENDIF at the end of the highest trigger level
+  SELECT (lcStartArea)
+  RETURN llRetVal
+ENDIF
+IF _triggerlevel=1
+  do riend with llRetVal
+ENDIF at the end of the highest trigger level
+SELECT (lcStartArea)
+RETURN llRetVal
+** "End of Referential integrity Delete trigger for" emplbnla
+********************************************************************************
+
+********************************************************************************
+procedure __RI_UPDATE_emplbnla
+** "Referential integrity update trigger for" emplbnla
+LOCAL llRetVal
+llRetVal = .t.
+PRIVATE pcParentDBF,pnParentRec,pcChildDBF,pnChildRec,pcParentID,pcChildID
+PRIVATE pcParentExpr,pcChildExpr
+STORE "" TO pcParentDBF,pcChildDBF,pcParentID,pcChildID,pcParentExpr,pcChildExpr
+STORE 0 TO pnParentRec,pnChildRec
+IF _triggerlevel=1
+  BEGIN TRANSACTION
+  PRIVATE pcRIcursors,pcRIwkareas,pcRIolderror,pnerror,;
+  pcOldDele,pcOldExact,pcOldTalk,pcOldCompat,PcOldDBC
+  pcOldTalk=SET("TALK")
+  SET TALK OFF
+  pcOldDele=SET("DELETED")
+  pcOldExact=SET("EXACT")
+  pcOldCompat=SET("COMPATIBLE")
+  SET COMPATIBLE OFF
+  SET DELETED ON
+  SET EXACT OFF
+  pcRIcursors=""
+  pcRIwkareas=""
+  pcRIolderror=ON("error")
+  pnerror=0
+  ON ERROR pnerror=rierror(ERROR(),message(),message(1),program())
+  IF TYPE('gaErrors(1)')<>"U"
+    release gaErrors
+  ENDIF
+  PUBLIC gaErrors(1,12)
+  pcOldDBC=DBC()
+  SET DATA TO ("BASEBNLA")
+ENDIF first trigger
+LOCAL lcParentID && parent's value to be sought in child
+LOCAL lcOldParentID && previous parent id value
+LOCAL lcChildWkArea && child work area handle returned by riopen
+LOCAL lcChildID && child's value to be sought in parent
+LOCAL lcOldChildID && old child id value
+LOCAL lcParentWkArea && parentwork area handle returned by riopen
+LOCAL lcStartArea
+lcStartArea=select()
+llRetVal=.t.
+lcParentWkArea=select()
+SELECT (lcParentWkArea)
+pcParentDBF=dbf()
+pnParentRec=recno()
+lcOldParentID=OLDVAL("CEDULA")
+pcParentID=lcOldParentID
+pcParentExpr="CEDULA"
+lcParentID=CEDULA
+IF lcParentID<>lcOldParentID
+  lcChildWkArea=riopen("abonos")
+  IF lcChildWkArea<=0
+    IF _triggerlevel=1
+      DO riend WITH .F.
+    ENDIF at the end of the highest trigger level
+    SELECT (lcStartArea)
+    RETURN .F.
+  ENDIF not able to open the child work area
+  pcChildDBF=dbf(lcChildWkArea)
+  SELECT (lcChildWkArea)
+  SCAN FOR CEDULA=lcOldParentID
+    pnChildRec=recno()
+    pcChildID=CEDULA
+    pcChildExpr="CEDULA"
+    IF NOT llRetVal
+      EXIT
+    ENDIF && not llretval
+    llRetVal=riupdate("CEDULA",lcParentID,"EMPLBNLA")
+  ENDSCAN get all of the abonos records
+  =rireuse("abonos",lcChildWkArea)
+  IF NOT llRetVal
+    IF _triggerlevel=1
+      DO riend WITH llRetVal
+    ENDIF at the end of the highest trigger level
+    SELECT (lcStartArea)
+    RETURN llRetVal
+  ENDIF
+ENDIF this parent id changed
+SELECT (lcParentWkArea)
+pcParentDBF=dbf()
+pnParentRec=recno()
+lcOldParentID=OLDVAL("CEDULA")
+pcParentID=lcOldParentID
+pcParentExpr="CEDULA"
+lcParentID=CEDULA
+IF lcParentID<>lcOldParentID
+  lcChildWkArea=riopen("contbnla")
+  IF lcChildWkArea<=0
+    IF _triggerlevel=1
+      DO riend WITH .F.
+    ENDIF at the end of the highest trigger level
+    SELECT (lcStartArea)
+    RETURN .F.
+  ENDIF not able to open the child work area
+  pcChildDBF=dbf(lcChildWkArea)
+  SELECT (lcChildWkArea)
+  SCAN FOR CEDULA=lcOldParentID
+    pnChildRec=recno()
+    pcChildID=CEDULA
+    pcChildExpr="CEDULA"
+    IF NOT llRetVal
+      EXIT
+    ENDIF && not llretval
+    llRetVal=riupdate("CEDULA",lcParentID,"EMPLBNLA")
+  ENDSCAN get all of the contbnla records
+  =rireuse("contbnla",lcChildWkArea)
+  IF NOT llRetVal
+    IF _triggerlevel=1
+      DO riend WITH llRetVal
+    ENDIF at the end of the highest trigger level
+    SELECT (lcStartArea)
+    RETURN llRetVal
+  ENDIF
+ENDIF this parent id changed
+SELECT (lcParentWkArea)
+pcParentDBF=dbf()
+pnParentRec=recno()
+lcOldParentID=OLDVAL("CEDULA")
+pcParentID=lcOldParentID
+pcParentExpr="CEDULA"
+lcParentID=CEDULA
+IF lcParentID<>lcOldParentID
+  lcChildWkArea=riopen("reintegro")
+  IF lcChildWkArea<=0
+    IF _triggerlevel=1
+      DO riend WITH .F.
+    ENDIF at the end of the highest trigger level
+    SELECT (lcStartArea)
+    RETURN .F.
+  ENDIF not able to open the child work area
+  pcChildDBF=dbf(lcChildWkArea)
+  SELECT (lcChildWkArea)
+  SCAN FOR CEDULA=lcOldParentID
+    pnChildRec=recno()
+    pcChildID=CEDULA
+    pcChildExpr="CEDULA"
+    IF NOT llRetVal
+      EXIT
+    ENDIF && not llretval
+    llRetVal=riupdate("CEDULA",lcParentID,"EMPLBNLA")
+  ENDSCAN get all of the reintegro records
+  =rireuse("reintegro",lcChildWkArea)
+  IF NOT llRetVal
+    IF _triggerlevel=1
+      DO riend WITH llRetVal
+    ENDIF at the end of the highest trigger level
+    SELECT (lcStartArea)
+    RETURN llRetVal
+  ENDIF
+ENDIF this parent id changed
+SELECT (lcParentWkArea)
+pcParentDBF=dbf()
+pnParentRec=recno()
+lcOldParentID=OLDVAL("CEDULA")
+pcParentID=lcOldParentID
+pcParentExpr="CEDULA"
+lcParentID=CEDULA
+IF lcParentID<>lcOldParentID
+  lcChildWkArea=riopen("histrans")
+  IF lcChildWkArea<=0
+    IF _triggerlevel=1
+      DO riend WITH .F.
+    ENDIF at the end of the highest trigger level
+    SELECT (lcStartArea)
+    RETURN .F.
+  ENDIF not able to open the child work area
+  pcChildDBF=dbf(lcChildWkArea)
+  SELECT (lcChildWkArea)
+  SCAN FOR CEDULA=lcOldParentID
+    pnChildRec=recno()
+    pcChildID=CEDULA
+    pcChildExpr="CEDULA"
+    IF NOT llRetVal
+      EXIT
+    ENDIF && not llretval
+    llRetVal=riupdate("CEDULA",lcParentID,"EMPLBNLA")
+  ENDSCAN get all of the histrans records
+  =rireuse("histrans",lcChildWkArea)
+  IF NOT llRetVal
+    IF _triggerlevel=1
+      DO riend WITH llRetVal
+    ENDIF at the end of the highest trigger level
+    SELECT (lcStartArea)
+    RETURN llRetVal
+  ENDIF
+ENDIF this parent id changed
+
+SELECT (lcParentWkArea)
+pcParentDBF=dbf()
+pnParentRec=recno()
+lcOldParentID=OLDVAL("CEDULA")
+pcParentID=lcOldParentID
+pcParentExpr="CEDULA"
+lcParentID=CEDULA
+IF lcParentID<>lcOldParentID
+  lcChildWkArea=riopen("histcont")
+  IF lcChildWkArea<=0
+    IF _triggerlevel=1
+      DO riend WITH .F.
+    ENDIF at the end of the highest trigger level
+    SELECT (lcStartArea)
+    RETURN .F.
+  ENDIF not able to open the child work area
+  pcChildDBF=dbf(lcChildWkArea)
+  SELECT (lcChildWkArea)
+  SCAN FOR CEDULA=lcOldParentID
+    pnChildRec=recno()
+    pcChildID=CEDULA
+    pcChildExpr="CEDULA"
+    IF NOT llRetVal
+      EXIT
+    ENDIF && not llretval
+    llRetVal=riupdate("CEDULA",lcParentID,"EMPLBNLA")
+  ENDSCAN get all of the histcont records
+  =rireuse("histcont",lcChildWkArea)
+  IF NOT llRetVal
+    IF _triggerlevel=1
+      DO riend WITH llRetVal
+    ENDIF at the end of the highest trigger level
+    SELECT (lcStartArea)
+    RETURN llRetVal
+  ENDIF
+ENDIF this parent id changed
+SELECT (lcParentWkArea)
+pcParentDBF=dbf()
+pnParentRec=recno()
+lcOldParentID=OLDVAL("CEDULA")
+pcParentID=lcOldParentID
+pcParentExpr="CEDULA"
+lcParentID=CEDULA
+IF lcParentID<>lcOldParentID
+  lcChildWkArea=riopen("rechazos")
+  IF lcChildWkArea<=0
+    IF _triggerlevel=1
+      DO riend WITH .F.
+    ENDIF at the end of the highest trigger level
+    SELECT (lcStartArea)
+    RETURN .F.
+  ENDIF not able to open the child work area
+  pcChildDBF=dbf(lcChildWkArea)
+  SELECT (lcChildWkArea)
+  SCAN FOR CEDULA=lcOldParentID
+    pnChildRec=recno()
+    pcChildID=CEDULA
+    pcChildExpr="CEDULA"
+    IF NOT llRetVal
+      EXIT
+    ENDIF && not llretval
+    llRetVal=riupdate("CEDULA",lcParentID,"EMPLBNLA")
+  ENDSCAN get all of the rechazos records
+  =rireuse("rechazos",lcChildWkArea)
+  IF NOT llRetVal
+    IF _triggerlevel=1
+      DO riend WITH llRetVal
+    ENDIF at the end of the highest trigger level
+    SELECT (lcStartArea)
+    RETURN llRetVal
+  ENDIF
+ENDIF this parent id changed
+
+IF !DBUSED("PST")
+    IF TYPE("oAplicacion") = "O" AND !empty(oAplicacion.cDirSistema)
+       OPEN DATABASE oAplicacion.cDirSistema+"pst.dbc" SHARED
+    ENDIF  
+ENDIF &&DBUSED PST 
+SET DATABASE TO PST
+SELECT (lcParentWkArea)
+pcParentDBF=dbf()
+pnParentRec=recno()
+lcOldParentID=OLDVAL("CEDULA")
+pcParentID=lcOldParentID
+pcParentExpr="CEDULA"
+lcParentID=CEDULA
+IF lcParentID<>lcOldParentID
+  lcChildWkArea=riopen("reclamos")
+  IF lcChildWkArea<=0
+    IF _triggerlevel=1
+      DO riend WITH .F.
+    ENDIF at the end of the highest trigger level
+    SELECT (lcStartArea)
+    RETURN .F.
+  ENDIF not able to open the child work area
+  pcChildDBF=dbf(lcChildWkArea)
+  SELECT (lcChildWkArea)
+  SCAN FOR CEDULA=lcOldParentID
+    pnChildRec=recno()
+    pcChildID=CEDULA
+    pcChildExpr="CEDULA"
+    IF NOT llRetVal
+      EXIT
+    ENDIF && not llretval
+    llRetVal=riupdate("CEDULA",lcParentID,"EMPLBNLA")
+  ENDSCAN get all of the reclamos records
+  =rireuse("reclamos",lcChildWkArea)
+  IF NOT llRetVal
+    IF _triggerlevel=1
+      DO riend WITH llRetVal
+    ENDIF at the end of the highest trigger level
+    SELECT (lcStartArea)
+    RETURN llRetVal
+  ENDIF
+ENDIF this parent id changed
+
+IF !DBUSED("PST")
+    IF TYPE("oAplicacion") = "O" AND !empty(oAplicacion.cDirSistema)
+       OPEN DATABASE oAplicacion.cDirSistema+"pst.dbc" SHARED
+    ENDIF  
+ENDIF &&DBUSED PST 
+SET DATABASE TO PST
+SELECT (lcParentWkArea)
+pcParentDBF=dbf()
+pnParentRec=recno()
+lcOldParentID=OLDVAL("CEDULA")
+pcParentID=lcOldParentID
+pcParentExpr="CEDULA"
+lcParentID=CEDULA
+IF lcParentID<>lcOldParentID
+  lcChildWkArea=riopen("devcontra")
+  IF lcChildWkArea<=0
+    IF _triggerlevel=1
+      DO riend WITH .F.
+    ENDIF at the end of the highest trigger level
+    SELECT (lcStartArea)
+    RETURN .F.
+  ENDIF not able to open the child work area
+  pcChildDBF=dbf(lcChildWkArea)
+  SELECT (lcChildWkArea)
+  SCAN FOR CEDULA=lcOldParentID
+    pnChildRec=recno()
+    pcChildID=CEDULA
+    pcChildExpr="CEDULA"
+    IF NOT llRetVal
+      EXIT
+    ENDIF && not llretval
+    llRetVal=riupdate("CEDULA",lcParentID,"EMPLBNLA")
+  ENDSCAN get all of the devcontra records
+  =rireuse("devcontra",lcChildWkArea)
+  IF NOT llRetVal
+    IF _triggerlevel=1
+      DO riend WITH llRetVal
+    ENDIF at the end of the highest trigger level
+    SELECT (lcStartArea)
+    RETURN llRetVal
+  ENDIF
+ENDIF this parent id changed
+
+IF !DBUSED("PST")
+    IF TYPE("oAplicacion") = "O" AND !empty(oAplicacion.cDirSistema)
+       OPEN DATABASE oAplicacion.cDirSistema+"pst.dbc" SHARED
+    ENDIF  
+ENDIF &&DBUSED PST 
+SET DATABASE TO PST
+SELECT (lcParentWkArea)
+pcParentDBF=dbf()
+pnParentRec=recno()
+lcOldParentID=OLDVAL("CEDULA")
+pcParentID=lcOldParentID
+pcParentExpr="CEDULA"
+lcParentID=CEDULA
+IF lcParentID<>lcOldParentID
+  lcChildWkArea=riopen("modcontra")
+  IF lcChildWkArea<=0
+    IF _triggerlevel=1
+      DO riend WITH .F.
+    ENDIF at the end of the highest trigger level
+    SELECT (lcStartArea)
+    RETURN .F.
+  ENDIF not able to open the child work area
+  pcChildDBF=dbf(lcChildWkArea)
+  SELECT (lcChildWkArea)
+  SCAN FOR CEDULA=lcOldParentID
+    pnChildRec=recno()
+    pcChildID=CEDULA
+    pcChildExpr="CEDULA"
+    IF NOT llRetVal
+      EXIT
+    ENDIF && not llretval
+    llRetVal=riupdate("CEDULA",lcParentID,"EMPLBNLA")
+  ENDSCAN get all of the modcontra records
+  =rireuse("modcontra",lcChildWkArea)
+  IF NOT llRetVal
+    IF _triggerlevel=1
+      DO riend WITH llRetVal
+    ENDIF at the end of the highest trigger level
+    SELECT (lcStartArea)
+    RETURN llRetVal
+  ENDIF
+ENDIF this parent id changed
+
+IF _triggerlevel=1
+  do riend with llRetVal
+ENDIF at the end of the highest trigger level
+SELECT (lcStartArea)
+RETURN llRetVal
+** "End of Referential integrity Update trigger for" emplbnla
+********************************************************************************
+
+********************************************************************************
+** "Referential integrity delete trigger for" enviostot
+PROCEDURE __RI_DELETE_enviostot
+LOCAL llRetVal
+llRetVal = .t.
+PRIVATE pcParentDBF,pnParentRec,pcChildDBF,pnChildRec,pcParentID,pcChildID
+PRIVATE pcParentExpr,pcChildExpr
+STORE "" TO pcParentDBF,pcChildDBF,pcParentID,pcChildID,pcParentExpr,pcChildExpr
+STORE 0 TO pnParentRec,pnChildRec
+IF _triggerlevel=1
+  BEGIN TRANSACTION
+  PRIVATE pcRIcursors,pcRIwkareas,pcRIolderror,pnerror,;
+  pcOldDele,pcOldExact,pcOldTalk,pcOldCompat,PcOldDBC
+  pcOldTalk=SET("TALK")
+  SET TALK OFF
+  pcOldDele=SET("DELETED")
+  pcOldExact=SET("EXACT")
+  pcOldCompat=SET("COMPATIBLE")
+  SET COMPATIBLE OFF
+  SET DELETED ON
+  SET EXACT OFF
+  pcRIcursors=""
+  pcRIwkareas=""
+  pcRIolderror=ON("error")
+  pnerror=0
+  ON ERROR pnerror=rierror(ERROR(),message(),message(1),program())
+  IF TYPE('gaErrors(1)')<>"U"
+    release gaErrors
+  ENDIF
+  PUBLIC gaErrors(1,12)
+  pcOldDBC=DBC()
+  SET DATA TO ("BASEBNLA")
+ENDIF first trigger
+LOCAL lcParentID && parent's value to be sought in child
+LOCAL lcChildWkArea && child work area handle returned by riopen
+LOCAL lcParentWkArea
+LOCAL llDelHeaderarea
+LOCAL lcStartArea
+lcStartArea=select()
+llRetVal=.t.
+lcParentWkArea=select()
+SELECT (lcParentWkArea)
+pcParentDBF=dbf()
+pnParentRec=recno()
+STORE NUM_ENVIO TO lcParentID,pcParentID
+pcParentExpr="NUM_ENVIO"
+lcChildWkArea=riopen("enviodet","enviodet")
+IF lcChildWkArea<=0
+  IF _triggerlevel=1
+    DO riend WITH .F.
+  ENDIF at the end of the highest trigger level
+  RETURN .F.
+ENDIF not able to open the child work area
+pcChildDBF=dbf(lcChildWkArea)
+SELECT (lcChildWkArea)
+SEEK lcParentID
+SCAN WHILE NUM_ENVIO=lcParentID AND llRetVal
+  pnChildRec=recno()
+  pcChildID=NUM_ENVIO
+  pcChildExpr="NUM_ENVIO"
+  llRetVal=ridelete()
+ENDSCAN get all of the enviodet records
+=rireuse("enviodet",lcChildWkArea)
+IF NOT llRetVal
+  IF _triggerlevel=1
+    DO riend WITH llRetVal
+  ENDIF at the end of the highest trigger level
+  SELECT (lcStartArea)
+  RETURN llRetVal
+ENDIF
+IF _triggerlevel=1
+  do riend with llRetVal
+ENDIF at the end of the highest trigger level
+SELECT (lcStartArea)
+RETURN llRetVal
+** "End of Referential integrity Delete trigger for" enviostot
+********************************************************************************
+
+********************************************************************************
+procedure __RI_UPDATE_enviostot
+** "Referential integrity update trigger for" enviostot
+LOCAL llRetVal
+llRetVal = .t.
+PRIVATE pcParentDBF,pnParentRec,pcChildDBF,pnChildRec,pcParentID,pcChildID
+PRIVATE pcParentExpr,pcChildExpr
+STORE "" TO pcParentDBF,pcChildDBF,pcParentID,pcChildID,pcParentExpr,pcChildExpr
+STORE 0 TO pnParentRec,pnChildRec
+IF _triggerlevel=1
+  BEGIN TRANSACTION
+  PRIVATE pcRIcursors,pcRIwkareas,pcRIolderror,pnerror,;
+  pcOldDele,pcOldExact,pcOldTalk,pcOldCompat,PcOldDBC
+  pcOldTalk=SET("TALK")
+  SET TALK OFF
+  pcOldDele=SET("DELETED")
+  pcOldExact=SET("EXACT")
+  pcOldCompat=SET("COMPATIBLE")
+  SET COMPATIBLE OFF
+  SET DELETED ON
+  SET EXACT OFF
+  pcRIcursors=""
+  pcRIwkareas=""
+  pcRIolderror=ON("error")
+  pnerror=0
+  ON ERROR pnerror=rierror(ERROR(),message(),message(1),program())
+  IF TYPE('gaErrors(1)')<>"U"
+    release gaErrors
+  ENDIF
+  PUBLIC gaErrors(1,12)
+  pcOldDBC=DBC()
+  SET DATA TO ("BASEBNLA")
+ENDIF first trigger
+LOCAL lcParentID && parent's value to be sought in child
+LOCAL lcOldParentID && previous parent id value
+LOCAL lcChildWkArea && child work area handle returned by riopen
+LOCAL lcChildID && child's value to be sought in parent
+LOCAL lcOldChildID && old child id value
+LOCAL lcParentWkArea && parentwork area handle returned by riopen
+LOCAL lcStartArea
+lcStartArea=select()
+llRetVal=.t.
+lcParentWkArea=select()
+SELECT (lcParentWkArea)
+pcParentDBF=dbf()
+pnParentRec=recno()
+lcOldParentID=OLDVAL("NUM_ENVIO")
+pcParentID=lcOldParentID
+pcParentExpr="NUM_ENVIO"
+lcParentID=NUM_ENVIO
+IF lcParentID<>lcOldParentID
+  lcChildWkArea=riopen("enviodet")
+  IF lcChildWkArea<=0
+    IF _triggerlevel=1
+      DO riend WITH .F.
+    ENDIF at the end of the highest trigger level
+    SELECT (lcStartArea)
+    RETURN .F.
+  ENDIF not able to open the child work area
+  pcChildDBF=dbf(lcChildWkArea)
+  SELECT (lcChildWkArea)
+  SCAN FOR NUM_ENVIO=lcOldParentID
+    pnChildRec=recno()
+    pcChildID=NUM_ENVIO
+    pcChildExpr="NUM_ENVIO"
+    IF NOT llRetVal
+      EXIT
+    ENDIF && not llretval
+    llRetVal=riupdate("NUM_ENVIO",lcParentID,"ENVIOSTOT")
+  ENDSCAN get all of the enviodet records
+  =rireuse("enviodet",lcChildWkArea)
+  IF NOT llRetVal
+    IF _triggerlevel=1
+      DO riend WITH llRetVal
+    ENDIF at the end of the highest trigger level
+    SELECT (lcStartArea)
+    RETURN llRetVal
+  ENDIF
+ENDIF this parent id changed
+IF _triggerlevel=1
+  do riend with llRetVal
+ENDIF at the end of the highest trigger level
+SELECT (lcStartArea)
+RETURN llRetVal
+** "End of Referential integrity Update trigger for" enviostot
+********************************************************************************
+
+********************************************************************************
+** "Referential integrity delete trigger for" formato1
+PROCEDURE __RI_DELETE_formato1
+LOCAL llRetVal
+llRetVal = .t.
+PRIVATE pcParentDBF,pnParentRec,pcChildDBF,pnChildRec,pcParentID,pcChildID
+PRIVATE pcParentExpr,pcChildExpr
+STORE "" TO pcParentDBF,pcChildDBF,pcParentID,pcChildID,pcParentExpr,pcChildExpr
+STORE 0 TO pnParentRec,pnChildRec
+IF _triggerlevel=1
+  BEGIN TRANSACTION
+  PRIVATE pcRIcursors,pcRIwkareas,pcRIolderror,pnerror,;
+  pcOldDele,pcOldExact,pcOldTalk,pcOldCompat,PcOldDBC
+  pcOldTalk=SET("TALK")
+  SET TALK OFF
+  pcOldDele=SET("DELETED")
+  pcOldExact=SET("EXACT")
+  pcOldCompat=SET("COMPATIBLE")
+  SET COMPATIBLE OFF
+  SET DELETED ON
+  SET EXACT OFF
+  pcRIcursors=""
+  pcRIwkareas=""
+  pcRIolderror=ON("error")
+  pnerror=0
+  ON ERROR pnerror=rierror(ERROR(),message(),message(1),program())
+  IF TYPE('gaErrors(1)')<>"U"
+    release gaErrors
+  ENDIF
+  PUBLIC gaErrors(1,12)
+  pcOldDBC=DBC()
+  SET DATA TO ("BASEBNLA")
+ENDIF first trigger
+LOCAL lcParentID && parent's value to be sought in child
+LOCAL lcChildWkArea && child work area handle returned by riopen
+LOCAL lcParentWkArea
+LOCAL llDelHeaderarea
+LOCAL lcStartArea
+lcStartArea=select()
+llRetVal=.t.
+lcParentWkArea=select()
+SELECT (lcParentWkArea)
+pcParentDBF=dbf()
+pnParentRec=recno()
+STORE FORMATO+ID_LINEA TO lcParentID,pcParentID
+pcParentExpr="FORMATO+ID_LINEA"
+lcChildWkArea=riopen("formato2","formato2")
+IF lcChildWkArea<=0
+  IF _triggerlevel=1
+    DO riend WITH .F.
+  ENDIF at the end of the highest trigger level
+  RETURN .F.
+ENDIF not able to open the child work area
+pcChildDBF=dbf(lcChildWkArea)
+SELECT (lcChildWkArea)
+SEEK lcParentID
+SCAN WHILE FORMATO+ID_LINEA=lcParentID AND llRetVal
+  pnChildRec=recno()
+  pcChildID=FORMATO+ID_LINEA+ID_CAMPO
+  pcChildExpr="FORMATO+ID_LINEA+ID_CAMPO"
+  llRetVal=ridelete()
+ENDSCAN get all of the formato2 records
+=rireuse("formato2",lcChildWkArea)
+IF NOT llRetVal
+  IF _triggerlevel=1
+    DO riend WITH llRetVal
+  ENDIF at the end of the highest trigger level
+  SELECT (lcStartArea)
+  RETURN llRetVal
+ENDIF
+IF _triggerlevel=1
+  do riend with llRetVal
+ENDIF at the end of the highest trigger level
+SELECT (lcStartArea)
+RETURN llRetVal
+** "End of Referential integrity Delete trigger for" formato1
+********************************************************************************
+
+********************************************************************************
+procedure __RI_UPDATE_formato1
+** "Referential integrity update trigger for" formato1
+LOCAL llRetVal
+llRetVal = .t.
+PRIVATE pcParentDBF,pnParentRec,pcChildDBF,pnChildRec,pcParentID,pcChildID
+PRIVATE pcParentExpr,pcChildExpr
+STORE "" TO pcParentDBF,pcChildDBF,pcParentID,pcChildID,pcParentExpr,pcChildExpr
+STORE 0 TO pnParentRec,pnChildRec
+IF _triggerlevel=1
+  BEGIN TRANSACTION
+  PRIVATE pcRIcursors,pcRIwkareas,pcRIolderror,pnerror,;
+  pcOldDele,pcOldExact,pcOldTalk,pcOldCompat,PcOldDBC
+  pcOldTalk=SET("TALK")
+  SET TALK OFF
+  pcOldDele=SET("DELETED")
+  pcOldExact=SET("EXACT")
+  pcOldCompat=SET("COMPATIBLE")
+  SET COMPATIBLE OFF
+  SET DELETED ON
+  SET EXACT OFF
+  pcRIcursors=""
+  pcRIwkareas=""
+  pcRIolderror=ON("error")
+  pnerror=0
+  ON ERROR pnerror=rierror(ERROR(),message(),message(1),program())
+  IF TYPE('gaErrors(1)')<>"U"
+    release gaErrors
+  ENDIF
+  PUBLIC gaErrors(1,12)
+  pcOldDBC=DBC()
+  SET DATA TO ("BASEBNLA")
+ENDIF first trigger
+LOCAL lcParentID && parent's value to be sought in child
+LOCAL lcOldParentID && previous parent id value
+LOCAL lcChildWkArea && child work area handle returned by riopen
+LOCAL lcChildID && child's value to be sought in parent
+LOCAL lcOldChildID && old child id value
+LOCAL lcParentWkArea && parentwork area handle returned by riopen
+LOCAL lcStartArea
+lcStartArea=select()
+llRetVal=.t.
+lcParentWkArea=select()
+SELECT (lcParentWkArea)
+pcParentDBF=dbf()
+pnParentRec=recno()
+lcOldParentID=OLDVAL("FORMATO+ID_LINEA")
+pcParentID=lcOldParentID
+pcParentExpr="FORMATO+ID_LINEA"
+lcParentID=FORMATO+ID_LINEA
+IF lcParentID<>lcOldParentID
+  lcChildWkArea=riopen("formato2")
+  IF lcChildWkArea<=0
+    IF _triggerlevel=1
+      DO riend WITH .F.
+    ENDIF at the end of the highest trigger level
+    SELECT (lcStartArea)
+    RETURN .F.
+  ENDIF not able to open the child work area
+  pcChildDBF=dbf(lcChildWkArea)
+  SELECT (lcChildWkArea)
+  SCAN FOR FORMATO+ID_LINEA=lcOldParentID
+    pnChildRec=recno()
+    pcChildID=FORMATO+ID_LINEA+ID_CAMPO
+    pcChildExpr="FORMATO+ID_LINEA+ID_CAMPO"
+    llRetVal=riupdate("FORMATO",substr(lcParentID,1,10),"formato1")
+    IF NOT llRetVal
+      EXIT
+    ENDIF && not llretval
+  ENDSCAN get all of the formato2 records
+  =rireuse("formato2",lcChildWkArea)
+  IF NOT llRetVal
+    IF _triggerlevel=1
+      DO riend WITH llRetVal
+    ENDIF at the end of the highest trigger level
+    SELECT (lcStartArea)
+    RETURN llRetVal
+  ENDIF
+ENDIF this parent id changed
+IF _triggerlevel=1
+  do riend with llRetVal
+ENDIF at the end of the highest trigger level
+SELECT (lcStartArea)
+RETURN llRetVal
+** "End of Referential integrity Update trigger for" formato1
+********************************************************************************
+
+********************************************************************************
+procedure __RI_UPDATE_inclbnla
+** "Referential integrity update trigger for" inclbnla
+LOCAL llRetVal
+llRetVal = .t.
+PRIVATE pcParentDBF,pnParentRec,pcChildDBF,pnChildRec,pcParentID,pcChildID
+PRIVATE pcParentExpr,pcChildExpr
+STORE "" TO pcParentDBF,pcChildDBF,pcParentID,pcChildID,pcParentExpr,pcChildExpr
+STORE 0 TO pnParentRec,pnChildRec
+IF _triggerlevel=1
+  BEGIN TRANSACTION
+  PRIVATE pcRIcursors,pcRIwkareas,pcRIolderror,pnerror,;
+  pcOldDele,pcOldExact,pcOldTalk,pcOldCompat,PcOldDBC
+  pcOldTalk=SET("TALK")
+  SET TALK OFF
+  pcOldDele=SET("DELETED")
+  pcOldExact=SET("EXACT")
+  pcOldCompat=SET("COMPATIBLE")
+  SET COMPATIBLE OFF
+  SET DELETED ON
+  SET EXACT OFF
+  pcRIcursors=""
+  pcRIwkareas=""
+  pcRIolderror=ON("error")
+  pnerror=0
+  ON ERROR pnerror=rierror(ERROR(),message(),message(1),program())
+  IF TYPE('gaErrors(1)')<>"U"
+    release gaErrors
+  ENDIF
+  PUBLIC gaErrors(1,12)
+  pcOldDBC=DBC()
+  SET DATA TO ("BASEBNLA")
+ENDIF first trigger
+LOCAL lcParentID && parent's value to be sought in child
+LOCAL lcOldParentID && previous parent id value
+LOCAL lcChildWkArea && child work area handle returned by riopen
+LOCAL lcChildID && child's value to be sought in parent
+LOCAL lcOldChildID && old child id value
+LOCAL lcParentWkArea && parentwork area handle returned by riopen
+LOCAL lcStartArea
+lcStartArea=select()
+llRetVal=.t.
+lcParentWkArea=select()
+SELECT (lcParentWkArea)
+pcParentDBF=dbf()
+pnParentRec=recno()
+lcOldParentID=OLDVAL("RELAINCLUS")
+pcParentID=lcOldParentID
+pcParentExpr="RELAINCLUS"
+lcParentID=RELAINCLUS
+IF lcParentID<>lcOldParentID
+  lcChildWkArea=riopen("contbnla")
+  IF lcChildWkArea<=0
+    IF _triggerlevel=1
+      DO riend WITH .F.
+    ENDIF at the end of the highest trigger level
+    SELECT (lcStartArea)
+    RETURN .F.
+  ENDIF not able to open the child work area
+  pcChildDBF=dbf(lcChildWkArea)
+  SELECT (lcChildWkArea)
+  SCAN FOR RELAINCLUS=lcOldParentID
+    pnChildRec=recno()
+    pcChildID=RELAINCLUS
+    pcChildExpr="RELAINCLUS"
+    IF NOT llRetVal
+      EXIT
+    ENDIF && not llretval
+    llRetVal=riupdate("RELAINCLUS",lcParentID,"INCLBNLA")
+  ENDSCAN get all of the contbnla records
+  =rireuse("contbnla",lcChildWkArea)
+  IF NOT llRetVal
+    IF _triggerlevel=1
+      DO riend WITH llRetVal
+    ENDIF at the end of the highest trigger level
+    SELECT (lcStartArea)
+    RETURN llRetVal
+  ENDIF
+ENDIF this parent id changed
+
+LOCAL ldOldParentFec, ldParentFec
+SELECT (lcParentWkArea)
+pcParentDBF=dbf()
+pnParentRec=recno()
+lcOldParentID=OLDVAL("RELAINCLUS")
+ldOldParentFec= OLDVAL("FEC_VIGENC")
+pcParentID=lcOldParentID
+pcParentExpr="RELAINCLUS"
+lcParentID=RELAINCLUS
+ldParentFec=FEC_VIGENC
+IF ldParentFec<>ldOldParentFec
+  lcChildWkArea=riopen("contbnla")
+  IF lcChildWkArea<=0
+    IF _triggerlevel=1
+      DO riend WITH .F.
+    ENDIF at the end of the highest trigger level
+    SELECT (lcStartArea)
+    RETURN .F.
+  ENDIF not able to open the child work area
+  pcChildDBF=dbf(lcChildWkArea)
+  SELECT (lcChildWkArea)
+  SCAN FOR RELAINCLUS=lcOldParentID
+    pnChildRec=recno()
+    pcChildID=RELAINCLUS
+    pcChildExpr="RELAINCLUS"
+    IF NOT llRetVal
+      EXIT
+    ENDIF && not llretval
+    llRetVal=riupdate("FEC_VIGENC",ldParentFec,"INCLBNLA")
+  ENDSCAN get all of the contbnla records
+  =rireuse("contbnla",lcChildWkArea)
+  IF NOT llRetVal
+    IF _triggerlevel=1
+      DO riend WITH llRetVal
+    ENDIF at the end of the highest trigger level
+    SELECT (lcStartArea)
+    RETURN llRetVal
+  ENDIF
+ENDIF this parent id changed
+
+LOCAL ldOldParentCASA, ldParentCASA
+SELECT (lcParentWkArea)
+pcParentDBF=dbf()
+pnParentRec=recno()
+lcOldParentID=OLDVAL("RELAINCLUS")
+lcOldParentCASA= OLDVAL("COD_CASA")
+pcParentID=lcOldParentID
+pcParentExpr="RELAINCLUS"
+lcParentID=RELAINCLUS
+lcParentCASA=COD_CASA
+IF lcParentCASA<>lcOldParentCASA
+  lcChildWkArea=riopen("contbnla")
+  IF lcChildWkArea<=0
+    IF _triggerlevel=1
+      DO riend WITH .F.
+    ENDIF at the end of the highest trigger level
+    SELECT (lcStartArea)
+    RETURN .F.
+  ENDIF not able to open the child work area
+  pcChildDBF=dbf(lcChildWkArea)
+  SELECT (lcChildWkArea)
+  SCAN FOR RELAINCLUS=lcOldParentID
+    pnChildRec=recno()
+    pcChildID=RELAINCLUS
+    pcChildExpr="RELAINCLUS"
+    IF NOT llRetVal
+      EXIT
+    ENDIF && not llretval
+    llRetVal=riupdate("COD_CASA",lcParentCASA,"INCLBNLA")
+  ENDSCAN get all of the contbnla records
+  =rireuse("contbnla",lcChildWkArea)
+  IF NOT llRetVal
+    IF _triggerlevel=1
+      DO riend WITH llRetVal
+    ENDIF at the end of the highest trigger level
+    SELECT (lcStartArea)
+    RETURN llRetVal
+  ENDIF
+ENDIF this parent id changed
+IF _triggerlevel=1
+  do riend with llRetVal
+ENDIF at the end of the highest trigger level
+SELECT (lcStartArea)
+RETURN llRetVal
+** "End of Referential integrity Update trigger for" inclbnla
+********************************************************************************
+
+********************************************************************************
+** "Referential integrity delete trigger for" servbnla
+PROCEDURE __RI_DELETE_servbnla
+LOCAL llRetVal
+llRetVal = .t.
+PRIVATE pcParentDBF,pnParentRec,pcChildDBF,pnChildRec,pcParentID,pcChildID
+PRIVATE pcParentExpr,pcChildExpr
+STORE "" TO pcParentDBF,pcChildDBF,pcParentID,pcChildID,pcParentExpr,pcChildExpr
+STORE 0 TO pnParentRec,pnChildRec
+IF _triggerlevel=1
+  BEGIN TRANSACTION
+  PRIVATE pcRIcursors,pcRIwkareas,pcRIolderror,pnerror,;
+  pcOldDele,pcOldExact,pcOldTalk,pcOldCompat,PcOldDBC
+  pcOldTalk=SET("TALK")
+  SET TALK OFF
+  pcOldDele=SET("DELETED")
+  pcOldExact=SET("EXACT")
+  pcOldCompat=SET("COMPATIBLE")
+  SET COMPATIBLE OFF
+  SET DELETED ON
+  SET EXACT OFF
+  pcRIcursors=""
+  pcRIwkareas=""
+  pcRIolderror=ON("error")
+  pnerror=0
+  ON ERROR pnerror=rierror(ERROR(),message(),message(1),program())
+  IF TYPE('gaErrors(1)')<>"U"
+    release gaErrors
+  ENDIF
+  PUBLIC gaErrors(1,12)
+  pcOldDBC=DBC()
+  SET DATA TO ("BASEBNLA")
+ENDIF first trigger
+LOCAL lcParentID && parent's value to be sought in child
+LOCAL lcChildWkArea && child work area handle returned by riopen
+LOCAL lcParentWkArea
+LOCAL llDelHeaderarea
+LOCAL lcStartArea
+lcStartArea=select()
+llRetVal=.t.
+lcParentWkArea=select()
+SELECT (lcParentWkArea)
+pcParentDBF=dbf()
+pnParentRec=recno()
+STORE COD_SERVIC TO lcParentID,pcParentID
+pcParentExpr="COD_SERVIC"
+lcChildWkArea=riopen("emplbnla","emplserv")
+IF lcChildWkArea<=0
+  IF _triggerlevel=1
+    DO riend WITH .F.
+  ENDIF at the end of the highest trigger level
+  RETURN .F.
+ENDIF not able to open the child work area
+pcChildDBF=dbf(lcChildWkArea)
+llRetVal=!SEEK(lcParentID,lcChildWkArea)
+SELECT (lcChildWkArea)
+pnChildRec=recno()
+pcChildID=UBI_SERVIC
+pcChildExpr="UBI_SERVIC"
+IF !llRetVal
+  pnError = rierror(-1,"Delete restrict rule violated.","","")
+ENDIF
+=rireuse("emplbnla",lcChildWkArea)
+IF NOT llRetVal
+  IF _triggerlevel=1
+    DO riend WITH llRetVal
+  ENDIF at the end of the highest trigger level
+  SELECT (lcStartArea)
+  RETURN llRetVal
+ENDIF
+IF _triggerlevel=1
+  do riend with llRetVal
+ENDIF at the end of the highest trigger level
+SELECT (lcStartArea)
+RETURN llRetVal
+** "End of Referential integrity Delete trigger for" servbnla
+********************************************************************************
+
+********************************************************************************
+procedure __RI_UPDATE_servbnla
+** "Referential integrity update trigger for" servbnla
+LOCAL llRetVal
+llRetVal = .t.
+PRIVATE pcParentDBF,pnParentRec,pcChildDBF,pnChildRec,pcParentID,pcChildID
+PRIVATE pcParentExpr,pcChildExpr
+STORE "" TO pcParentDBF,pcChildDBF,pcParentID,pcChildID,pcParentExpr,pcChildExpr
+STORE 0 TO pnParentRec,pnChildRec
+IF _triggerlevel=1
+  BEGIN TRANSACTION
+  PRIVATE pcRIcursors,pcRIwkareas,pcRIolderror,pnerror,;
+  pcOldDele,pcOldExact,pcOldTalk,pcOldCompat,PcOldDBC
+  pcOldTalk=SET("TALK")
+  SET TALK OFF
+  pcOldDele=SET("DELETED")
+  pcOldExact=SET("EXACT")
+  pcOldCompat=SET("COMPATIBLE")
+  SET COMPATIBLE OFF
+  SET DELETED ON
+  SET EXACT OFF
+  pcRIcursors=""
+  pcRIwkareas=""
+  pcRIolderror=ON("error")
+  pnerror=0
+  ON ERROR pnerror=rierror(ERROR(),message(),message(1),program())
+  IF TYPE('gaErrors(1)')<>"U"
+    release gaErrors
+  ENDIF
+  PUBLIC gaErrors(1,12)
+  pcOldDBC=DBC()
+  SET DATA TO ("BASEBNLA")
+ENDIF first trigger
+LOCAL lcParentID && parent's value to be sought in child
+LOCAL lcOldParentID && previous parent id value
+LOCAL lcChildWkArea && child work area handle returned by riopen
+LOCAL lcChildID && child's value to be sought in parent
+LOCAL lcOldChildID && old child id value
+LOCAL lcParentWkArea && parentwork area handle returned by riopen
+LOCAL lcStartArea
+lcStartArea=select()
+llRetVal=.t.
+lcParentWkArea=select()
+SELECT (lcParentWkArea)
+pcParentDBF=dbf()
+pnParentRec=recno()
+lcOldParentID=OLDVAL("COD_SERVIC")
+pcParentID=lcOldParentID
+pcParentExpr="COD_SERVIC"
+lcParentID=COD_SERVIC
+IF lcParentID<>lcOldParentID
+  lcChildWkArea=riopen("emplbnla")
+  IF lcChildWkArea<=0
+    IF _triggerlevel=1
+      DO riend WITH .F.
+    ENDIF at the end of the highest trigger level
+    SELECT (lcStartArea)
+    RETURN .F.
+  ENDIF not able to open the child work area
+  pcChildDBF=dbf(lcChildWkArea)
+  SELECT (lcChildWkArea)
+  SCAN FOR UBI_SERVIC=lcOldParentID
+    pnChildRec=recno()
+    pcChildID=UBI_SERVIC
+    pcChildExpr="UBI_SERVIC"
+    IF NOT llRetVal
+      EXIT
+    ENDIF && not llretval
+    llRetVal=riupdate("UBI_SERVIC",lcParentID,"SERVBNLA")
+  ENDSCAN get all of the emplbnla records
+  =rireuse("emplbnla",lcChildWkArea)
+  IF NOT llRetVal
+    IF _triggerlevel=1
+      DO riend WITH llRetVal
+    ENDIF at the end of the highest trigger level
+    SELECT (lcStartArea)
+    RETURN llRetVal
+  ENDIF
+ENDIF this parent id changed
+IF _triggerlevel=1
+  do riend with llRetVal
+ENDIF at the end of the highest trigger level
+SELECT (lcStartArea)
+RETURN llRetVal
+** "End of Referential integrity Update trigger for" servbnla
+********************************************************************************
+**__RI_FOOTER!@ Do NOT REMOVE or MODIFY this line!!!! @!__RI_FOOTER**
+şòÿ    İy  İy                        ¸   %   gj      ”x  >  l          ü  U  «  ®÷  ş T÷  üaış %üCêÂğ C'
+	ñ CS
+ıù9 ş T÷  ü-ış ù€ ş %üC'
+ıù| ş ş %üCû	 BUFFERINGê‰øıùx ş	 †üCê“ış ş ş ş
+ Z#üCOış T÷  ü÷ ø ış	 Bü÷  ış U  LLRETVAL PNERRORş  ¯÷  ÷ ÷ ş ®÷ ş T÷ üaış %üCêÂñ CS
+ıù@ ş T÷ ü-ış ùÓ ş %üC÷  Î÷ ıùÏ ş 5÷ ş3 T÷ üCCCÙ tcCascadeParentbÙ Cò Ù  ó ÷ 6fış >ü÷  ıÑü÷ ış %üCû	 BUFFERINGê‰øıùË ş	 †üCê“ış ş ş ş
+ Z#üCOış T÷ ü÷ ø ış	 Bü÷ ış U  TCFIELDNAME
+ TCNEWVALUE TCCASCADEPARENT LLRETVAL PCCASCADEPARENT PNERROR' 4÷  ÷ ÷ ÷ ş ®÷ ÷ ş T÷ üCë÷ øÍış+ %üCû gaErrors[lnErrorRows,1]bÙ LıùŠ ş ö ü÷ øıüCë÷ øÍış T÷ ü÷ øış ş Tö ü÷ ıüøıü÷  ış Tö ü÷ ıüøıü÷ ış Tö ü÷ ıüøıü÷ ış Tö ü÷ ıüøıüÙ  ış T÷ üøış +üCC÷ t¡
+ıùOş, Tö ü÷ ıüøıüC ÷ øö Ù ,C÷ tış T÷ ü÷ øış ş Tö ü÷ ıüøıü÷ ış Tö ü÷ ıüøıü÷ ış Tö ü÷ ıüøıü÷	 ış Tö ü÷ ıüøıü÷
+ ış Tö ü÷ ıüø	ıü÷ ış Tö ü÷ ıüø
+ıü÷ ış Tö ü÷ ıüøıü÷ ış Tö ü÷ ıüøıü÷ ış	 Bü÷  ış U  TNERRNO	 TCMESSAGE TCCODE	 TCPROGRAM LNERRORROWS LNXX GAERRORS PCPARENTDBF PNPARENTREC
+ PCPARENTID PCPARENTEXPR
+ PCCHILDDBF
+ PNCHILDREC	 PCCHILDID PCCHILDEXPRV 4÷  ÷ ş ®÷ ÷ ÷ ÷ ÷ ş T÷ üø ış T÷ üCC÷  fÙ *C÷ f¯ış „÷ üøı(ü÷ ıùÀ ş T÷ üC÷  Ù *÷ ÷ ¸ış0 %üCC÷ ÷ øø\®ñ CC÷ ÷ øø\¡ıù¯ ş !ş ş T÷ üø ış …ş %ü÷ ø ıùş T÷ üCWış Fù  ş T÷ üCWış %üC÷ ¡
+ıù*ş% QÂü÷  ı¼üÙ __riCCCWZAıÃü÷ ış ùPş QÂü÷  ı¼üÙ __riCCCWZAış ş %ü÷ ø ıù…ş  T÷ ü÷ C÷  fÙ ?CCWøZış ùšş T÷ üø ış ş ùEş! T÷ üCC÷ ÷ C÷  >øø\gış5 T÷ üC÷ C÷  fÙ *C÷ øZC÷  fÙ ?C÷ øZ¨ış %üC÷ ¡
+ıùş G(ü÷ ı(ü÷ ış ş %ü÷ ø ıùAş T÷ üø ış ş ş
+ Bü÷ ış U	  TCTABLE TCORDER LCCURWKAREA LCNEWWKAREA LNINUSESPOT LNOCCURS LNOCCURANCE PCRICURSORS PNERROR” 4÷  ş ®÷ ÷ ÷ ş %ü÷  ıù( ş ½ş ù@ ş Gş œş G ş ş %üC÷ ¡ıù[ ş {û  ş ù~ ş ON ERROR &pcRIolderror.
+ ş „÷ üøı(üCÙ *÷ ¯ıùÎ ş T÷ üCÙ *÷ ÷ ¸øış QüCC÷ ÷ ø\gış …ş %ü÷ Ù ONıùë ş GA ş ş %ü÷ Ù OFFıù	ş Gş ş %ü÷ Ù ONıù&ş G ş ş %ü÷	 Ù ONıùCş G2 ş ş HùTù†ş üC÷
+ ¡ıùiş G(ş ü÷
+ Cê–ıù†ş G(ü÷
+ ış ş Büaış U 	 TLSUCCESS LNXX LNSPOT
+ LCWORKAREA PCRIOLDERROR PCRICURSORS PCOLDCOMPAT	 PCOLDDELE
+ PCOLDEXACT	 PCOLDTALK PCOLDDBCJ  4÷  ÷ ş5 T÷ üC÷ C÷  fÙ ?C÷ øZC÷  fÙ *C÷ øZ¨ış Büaış U  TCTABLENAME TCWKAREA PCRICURSORS+ ®÷  ş T÷  üaış 5÷ ÷ ÷ ÷ ÷ ÷ ş 5÷ ÷ ş! JüÙ  ı(÷ ÷ ÷ ÷ ÷ ÷ ş Jüø ı(÷ ÷ ş %üí=øıùíş ›½ş' 5÷	 ÷
+ ÷ ÷ ÷ ÷ ÷ ÷ ÷ ş T÷ üCÙ TALKvış G2ş T÷ üCÙ DELETEDvış T÷ üCÙ EXACTvış T÷ üCÙ
+ COMPATIBLEvış GAş G ş Gş T÷	 üÙ  ış T÷
+ üÙ  ış T÷ üCÙ errorêış T÷ üø ış? 1û7 pnerror=rierror(ERROR(),message(),message(1),program())ş %üCû gaErrors(1)bÙ Uıùµş <÷ ş ş 7ö üøıüøış T÷ üCê–ış G(üÙ BASEBNLAış ş ®÷ ş ®÷ ş ®÷ ş ®÷ ş ®÷ ş T÷ üCWış T÷  üaış T÷ üCWış
+ Fü÷ ış T÷ üC&ış T÷ üCOış Jü÷ ÷ ÷ ı(÷ ÷ ş' T÷ üÙ CEDULA+COD_CASA+NUM_CONTRAış' T÷ üCÙ	 transpagoÙ
+ tracedcasaö ış %ü÷ ø ıù÷ş %üí=øıùìş ÷ Ñü-ış ş Bü-ış ş T÷ üC÷ &ış
+ Fü÷ ış	 Eü÷ ış! ~+ü÷ ÷ ÷ ÷ ğ ÷  	ıù”ş T÷ üCOış T÷ ü÷ ÷ ÷ ış' T÷ üÙ CEDULA+COD_CASA+NUM_CONTRAış T÷  üCö ış ş †üCÙ	 transpago ÷ ö ış %ü÷  
+ıùòş %üí=øıùÛş ÷ Ñ÷  ş ş
+ Fü÷ ış	 Bü÷  ış ş %üí=øıùş ÷ Ñ÷  ş ş
+ Fü÷ ış	 Bü÷  ış U  LLRETVAL PCPARENTDBF PNPARENTREC
+ PCCHILDDBF
+ PNCHILDREC
+ PCPARENTID	 PCCHILDID PCPARENTEXPR PCCHILDEXPR PCRICURSORS PCRIWKAREAS PCRIOLDERROR PNERROR	 PCOLDDELE
+ PCOLDEXACT	 PCOLDTALK PCOLDCOMPAT PCOLDDBC GAERRORS
+ LCPARENTID LCCHILDWKAREA LCPARENTWKAREA LLDELHEADERAREA LCSTARTAREA CEDULA COD_CASA
+ NUM_CONTRA RIOPEN RIEND RIDELETE RIREUSEH ®÷  ş T÷  üaış 5÷ ÷ ÷ ÷ ÷ ÷ ş 5÷ ÷ ş! JüÙ  ı(÷ ÷ ÷ ÷ ÷ ÷ ş Jüø ı(÷ ÷ ş %üí=øıùíş ›½ş' 5÷	 ÷
+ ÷ ÷ ÷ ÷ ÷ ÷ ÷ ş T÷ üCÙ TALKvış G2ş T÷ üCÙ DELETEDvış T÷ üCÙ EXACTvış T÷ üCÙ
+ COMPATIBLEvış GAş G ş Gş T÷	 üÙ  ış T÷
+ üÙ  ış T÷ üCÙ errorêış T÷ üø ış? 1û7 pnerror=rierror(ERROR(),message(),message(1),program())ş %üCû gaErrors(1)bÙ Uıùµş <÷ ş ş 7ö üøıüøış T÷ üCê–ış G(üÙ BASEBNLAış ş ®÷ ş ®÷ ş ®÷ ş ®÷ ş ®÷ ş ®÷ ş ®÷ ş T÷ üCWış T÷  üaış T÷ üCWış
+ Fü÷ ış T÷ üC&ış T÷ üCOış* T÷ üCÙ CEDULA+COD_CASA+NUM_CONTRAê_ış T÷ ü÷ ış' T÷ üÙ CEDULA+COD_CASA+NUM_CONTRAış T÷ ü÷ ÷ ÷ ış %ü÷ ÷ ıùôş T÷ üCÙ rechazosö ış %ü÷ ø ıùEş %üí=øıù0ş ÷ Ñü-ış ş
+ Fü÷ ış Bü-ış ş T÷ üC÷ &ış
+ Fü÷ ış ~ü÷ ÷ ÷ ÷ ıù“ş T÷ üCOış T÷ ü÷ ÷ ÷ ış' T÷ üÙ CEDULA+COD_CASA+NUM_CONTRAış- T÷  üCÙ CEDULAC÷ øø	\Ù contbnlaö ış %ü÷  
+ıùş !ş ş/ T÷  üCÙ COD_CASAC÷ ø
+ø\Ù contbnlaö ış %ü÷  
+ıùHş !ş ş1 T÷  üCÙ
+ NUM_CONTRAC÷ øø\Ù contbnlaö ış %ü÷  
+ıùş !ş ş ş †üCÙ rechazos ÷ ö  ış %ü÷  
+ıùğş %üí=øıùÙş ÷ Ñ÷  ş ş
+ Fü÷ ış	 Bü÷  ış ş ş
+ Fü÷ ış T÷ üC&ış T÷ üCOış* T÷ üCÙ CEDULA+COD_CASA+NUM_CONTRAê_ış T÷ ü÷ ış' T÷ üÙ CEDULA+COD_CASA+NUM_CONTRAış T÷ ü÷ ÷ ÷ ış %ü÷ ÷ ıù§ş T÷ üCÙ descbnlaö ış %ü÷ ø ıùøş %üí=øıùãş ÷ Ñü-ış ş
+ Fü÷ ış Bü-ış ş T÷ üC÷ &ış
+ Fü÷ ış ~ü÷ ÷ ÷ ÷ ıùFş T÷ üCOış T÷ ü÷ ÷ ÷ ış' T÷ üÙ CEDULA+COD_CASA+NUM_CONTRAış- T÷  üCÙ CEDULAC÷ øø	\Ù contbnlaö ış %ü÷  
+ıù¶ş !ş ş/ T÷  üCÙ COD_CASAC÷ ø
+ø\Ù contbnlaö ış %ü÷  
+ıùûş !ş ş1 T÷  üCÙ
+ NUM_CONTRAC÷ øø\Ù contbnlaö ış %ü÷  
+ıùBş !ş ş ş †üCÙ descbnla ÷ ö  ış %ü÷  
+ıù£ş %üí=øıùŒş ÷ Ñ÷  ş ş
+ Fü÷ ış	 Bü÷  ış ş ş
+ Fü÷ ış T÷ üC&ış T÷ üCOış* T÷ üCÙ CEDULA+COD_CASA+NUM_CONTRAê_ış T÷ ü÷ ış' T÷ üÙ CEDULA+COD_CASA+NUM_CONTRAış T÷ ü÷ ÷ ÷ ış %ü÷ ÷ ıù\
+ş T÷ üCÙ	 transpagoö ış %ü÷ ø ıù¬ş %üí=øıù—ş ÷ Ñü-ış ş
+ Fü÷ ış Bü-ış ş T÷ üC÷ &ış
+ Fü÷ ış ~ü÷ ÷ ÷ ÷ ıùú	ş T÷ üCOış T÷ ü÷ ÷ ÷ ış' T÷ üÙ CEDULA+COD_CASA+NUM_CONTRAış- T÷  üCÙ CEDULAC÷ øø	\Ù contbnlaö ış %ü÷  
+ıùj	ş !ş ş/ T÷  üCÙ COD_CASAC÷ ø
+ø\Ù contbnlaö ış %ü÷  
+ıù¯	ş !ş ş1 T÷  üCÙ
+ NUM_CONTRAC÷ øø\Ù contbnlaö ış %ü÷  
+ıùö	ş !ş ş ş †üCÙ	 transpago ÷ ö  ış %ü÷  
+ıùX
+ş %üí=øıùA
+ş ÷ Ñ÷  ş ş
+ Fü÷ ış	 Bü÷  ış ş ş
+ Fü÷ ış T÷ üC&ış T÷ üCOış* T÷ üCÙ CEDULA+COD_CASA+NUM_CONTRAê_ış T÷ ü÷ ış' T÷ üÙ CEDULA+COD_CASA+NUM_CONTRAış T÷ ü÷ ÷ ÷ ış %ü÷ ÷ ıùş T÷ üCÙ enviodetö ış %ü÷ ø ıù`ş %üí=øıùKş ÷ Ñü-ış ş
+ Fü÷ ış Bü-ış ş T÷ üC÷ &ış
+ Fü÷ ış ~ü÷ ÷ ÷ ÷ ıù®ş T÷ üCOış T÷ ü÷ ÷ ÷ ış' T÷ üÙ CEDULA+COD_CASA+NUM_CONTRAış- T÷  üCÙ CEDULAC÷ øø	\Ù contbnlaö ış %ü÷  
+ıùş !ş ş/ T÷  üCÙ COD_CASAC÷ ø
+ø\Ù contbnlaö ış %ü÷  
+ıùcş !ş ş1 T÷  üCÙ
+ NUM_CONTRAC÷ øø\Ù contbnlaö ış %ü÷  
+ıùªş !ş ş ş †üCÙ enviodet ÷ ö  ış %ü÷  
+ıùş %üí=øıùôş ÷ Ñ÷  ş ş
+ Fü÷ ış	 Bü÷  ış ş ş %üí=øıù.ş ÷ Ñ÷  ş ş
+ Fü÷ ış	 Bü÷  ış U!  LLRETVAL PCPARENTDBF PNPARENTREC
+ PCCHILDDBF
+ PNCHILDREC
+ PCPARENTID	 PCCHILDID PCPARENTEXPR PCCHILDEXPR PCRICURSORS PCRIWKAREAS PCRIOLDERROR PNERROR	 PCOLDDELE
+ PCOLDEXACT	 PCOLDTALK PCOLDCOMPAT PCOLDDBC GAERRORS
+ LCPARENTID LCOLDPARENTID LCCHILDWKAREA	 LCCHILDID LCOLDCHILDID LCPARENTWKAREA LCSTARTAREA CEDULA COD_CASA
+ NUM_CONTRA RIOPEN RIEND RIUPDATE RIREUSE† ®÷  ş T÷  üaış 5÷ ÷ ÷ ÷ ÷ ÷ ş 5÷ ÷ ş! JüÙ  ı(÷ ÷ ÷ ÷ ÷ ÷ ş Jüø ı(÷ ÷ ş %üí=øıùíş ›½ş' 5÷	 ÷
+ ÷ ÷ ÷ ÷ ÷ ÷ ÷ ş T÷ üCÙ TALKvış G2ş T÷ üCÙ DELETEDvış T÷ üCÙ EXACTvış T÷ üCÙ
+ COMPATIBLEvış GAş G ş Gş T÷	 üÙ  ış T÷
+ üÙ  ış T÷ üCÙ errorêış T÷ üø ış? 1û7 pnerror=rierror(ERROR(),message(),message(1),program())ş %üCû gaErrors(1)bÙ Uıùµş <÷ ş ş 7ö üøıüøış T÷ üCê–ış G(üÙ BASEBNLAış ş ®÷ ş ®÷ ş ®÷ ş ®÷ ş ®÷ ş T÷ üCWış T÷  üaış T÷ üCWış
+ Fü÷ ış T÷ üC&ış T÷ üCOış Jü÷ ı(÷ ÷ ş T÷ üÙ CEDULAış$ T÷ üCÙ contbnlaÙ concbnlaö ış %ü÷ ø ıùØş %üí=øıùÍş ÷ Ñü-ış ş Bü-ış ş T÷ üC÷ &ış T÷  üC÷ ÷ Š
+ış
+ Fü÷ ış T÷ üCOış T÷ ü÷ ış T÷ üÙ CEDULAış %ü÷  
+ıù{ş9 T÷ üCùÿÿÙ Delete restrict rule violated.Ù  Ù  ö ış ş †üCÙ contbnla ÷ ö ış %ü÷  
+ıùØş %üí=øıùÁş ÷ Ñ÷  ş ş
+ Fü÷ ış	 Bü÷  ış ş
+ Fü÷ ış T÷ üC&ış T÷ üCOış Jü÷ ı(÷ ÷ ş T÷ üÙ CEDULAış& T÷ üCÙ histransÙ
+ histrancedö ış %ü÷ ø ıùş %üí=øıùtş ÷ Ñü-ış ş Bü-ış ş T÷ üC÷ &ış
+ Fü÷ ış	 Eü÷ ış ~+ü÷ ÷ ğ ÷  	ıùøş T÷ üCOış T÷ ü÷ ış T÷ üÙ CEDULAış T÷  üCö ış ş †üCÙ histrans ÷ ö ış %ü÷  
+ıùUş %üí=øıù>ş ÷ Ñ÷  ş ş
+ Fü÷ ış	 Bü÷  ış ş
+ Fü÷ ış T÷ üC&ış T÷ üCOış Jü÷ ı(÷ ÷ ş T÷ üÙ CEDULAış& T÷ üCÙ histcontÙ
+ histconcedö ış %ü÷ ø ıùüş %üí=øıùñş ÷ Ñü-ış ş Bü-ış ş T÷ üC÷ &ış
+ Fü÷ ış	 Eü÷ ış ~+ü÷ ÷ ğ ÷  	ıùuş T÷ üCOış T÷ ü÷ ış T÷ üÙ CEDULAış T÷  üCö ış ş †üCÙ histcont ÷ ö ış %ü÷  
+ıùÒş %üí=øıù»ş ÷ Ñ÷  ş ş
+ Fü÷ ış	 Bü÷  ış ş
+ Fü÷ ış T÷ üC&ış T÷ üCOış Jü÷ ı(÷ ÷ ş T÷ üÙ CEDULAış$ T÷ üCÙ rechazosÙ rechazosö ış %ü÷ ø ıùwş %üí=øıùlş ÷ Ñü-ış ş Bü-ış ş T÷ üC÷ &ış
+ Fü÷ ış	 Eü÷ ış ~+ü÷ ÷ ğ ÷  	ıùğş T÷ üCOış T÷ ü÷ ış T÷ üÙ CEDULAış T÷  üCö ış ş †üCÙ rechazos ÷ ö ış %ü÷  
+ıùMş %üí=øıù6ş ÷ Ñ÷  ş ş
+ Fü÷ ış	 Bü÷  ış ş %üí=øıùlş ÷ Ñ÷  ş ş
+ Fü÷ ış	 Bü÷  ış U  LLRETVAL PCPARENTDBF PNPARENTREC
+ PCCHILDDBF
+ PNCHILDREC
+ PCPARENTID	 PCCHILDID PCPARENTEXPR PCCHILDEXPR PCRICURSORS PCRIWKAREAS PCRIOLDERROR PNERROR	 PCOLDDELE
+ PCOLDEXACT	 PCOLDTALK PCOLDCOMPAT PCOLDDBC GAERRORS
+ LCPARENTID LCCHILDWKAREA LCPARENTWKAREA LLDELHEADERAREA LCSTARTAREA CEDULA RIOPEN RIEND RIERROR RIREUSE RIDELETEï ®÷  ş T÷  üaış 5÷ ÷ ÷ ÷ ÷ ÷ ş 5÷ ÷ ş! JüÙ  ı(÷ ÷ ÷ ÷ ÷ ÷ ş Jüø ı(÷ ÷ ş %üí=øıùíş ›½ş' 5÷	 ÷
+ ÷ ÷ ÷ ÷ ÷ ÷ ÷ ş T÷ üCÙ TALKvış G2ş T÷ üCÙ DELETEDvış T÷ üCÙ EXACTvış T÷ üCÙ
+ COMPATIBLEvış GAş G ş Gş T÷	 üÙ  ış T÷
+ üÙ  ış T÷ üCÙ errorêış T÷ üø ış? 1û7 pnerror=rierror(ERROR(),message(),message(1),program())ş %üCû gaErrors(1)bÙ Uıùµş <÷ ş ş 7ö üøıüøış T÷ üCê–ış G(üÙ BASEBNLAış ş ®÷ ş ®÷ ş ®÷ ş ®÷ ş ®÷ ş ®÷ ş ®÷ ş T÷ üCWış T÷  üaış T÷ üCWış
+ Fü÷ ış T÷ üC&ış T÷ üCOış T÷ üCÙ CEDULAê_ış T÷ ü÷ ış T÷ üÙ CEDULAış T÷ ü÷ ış %ü÷ ÷ ıù	ş T÷ üCÙ abonosö ış %ü÷ ø ıùş %üí=øıùşş ÷ Ñü-ış ş
+ Fü÷ ış Bü-ış ş T÷ üC÷ &ış
+ Fü÷ ış ~ü÷ ÷ ıùªş T÷ üCOış T÷ ü÷ ış T÷ üÙ CEDULAış %ü÷  
+ıù€ş !ş ş& T÷  üCÙ CEDULA ÷ Ù EMPLBNLAö ış ş †üCÙ abonos ÷ ö ış %ü÷  
+ıùş %üí=øıùîş ÷ Ñ÷  ş ş
+ Fü÷ ış	 Bü÷  ış ş ş
+ Fü÷ ış T÷ üC&ış T÷ üCOış T÷ üCÙ CEDULAê_ış T÷ ü÷ ış T÷ üÙ CEDULAış T÷ ü÷ ış %ü÷ ÷ ıùÕş T÷ üCÙ contbnlaö ış %ü÷ ø ıùİş %üí=øıùÈş ÷ Ñü-ış ş
+ Fü÷ ış Bü-ış ş T÷ üC÷ &ış
+ Fü÷ ış ~ü÷ ÷ ıùtş T÷ üCOış T÷ ü÷ ış T÷ üÙ CEDULAış %ü÷  
+ıùJş !ş ş& T÷  üCÙ CEDULA ÷ Ù EMPLBNLAö ış ş †üCÙ contbnla ÷ ö ış %ü÷  
+ıùÑş %üí=øıùºş ÷ Ñ÷  ş ş
+ Fü÷ ış	 Bü÷  ış ş ş
+ Fü÷ ış T÷ üC&ış T÷ üCOış T÷ üCÙ CEDULAê_ış T÷ ü÷ ış T÷ üÙ CEDULAış T÷ ü÷ ış %ü÷ ÷ ıù£ş T÷ üCÙ	 reintegroö ış %ü÷ ø ıùªş %üí=øıù•ş ÷ Ñü-ış ş
+ Fü÷ ış Bü-ış ş T÷ üC÷ &ış
+ Fü÷ ış ~ü÷ ÷ ıùAş T÷ üCOış T÷ ü÷ ış T÷ üÙ CEDULAış %ü÷  
+ıùş !ş ş& T÷  üCÙ CEDULA ÷ Ù EMPLBNLAö ış ş †üCÙ	 reintegro ÷ ö ış %ü÷  
+ıùŸş %üí=øıùˆş ÷ Ñ÷  ş ş
+ Fü÷ ış	 Bü÷  ış ş ş
+ Fü÷ ış T÷ üC&ış T÷ üCOış T÷ üCÙ CEDULAê_ış T÷ ü÷ ış T÷ üÙ CEDULAış T÷ ü÷ ış %ü÷ ÷ ıùo	ş T÷ üCÙ histransö ış %ü÷ ø ıùwş %üí=øıùbş ÷ Ñü-ış ş
+ Fü÷ ış Bü-ış ş T÷ üC÷ &ış
+ Fü÷ ış ~ü÷ ÷ ıù	ş T÷ üCOış T÷ ü÷ ış T÷ üÙ CEDULAış %ü÷  
+ıùäş !ş ş& T÷  üCÙ CEDULA ÷ Ù EMPLBNLAö ış ş †üCÙ histrans ÷ ö ış %ü÷  
+ıùk	ş %üí=øıùT	ş ÷ Ñ÷  ş ş
+ Fü÷ ış	 Bü÷  ış ş ş
+ Fü÷ ış T÷ üC&ış T÷ üCOış T÷ üCÙ CEDULAê_ış T÷ ü÷ ış T÷ üÙ CEDULAış T÷ ü÷ ış %ü÷ ÷ ıù;ş T÷ üCÙ histcontö ış %ü÷ ø ıùC
+ş %üí=øıù.
+ş ÷ Ñü-ış ş
+ Fü÷ ış Bü-ış ş T÷ üC÷ &ış
+ Fü÷ ış ~ü÷ ÷ ıùÚ
+ş T÷ üCOış T÷ ü÷ ış T÷ üÙ CEDULAış %ü÷  
+ıù°
+ş !ş ş& T÷  üCÙ CEDULA ÷ Ù EMPLBNLAö ış ş †üCÙ histcont ÷ ö ış %ü÷  
+ıù7ş %üí=øıù ş ÷ Ñ÷  ş ş
+ Fü÷ ış	 Bü÷  ış ş ş
+ Fü÷ ış T÷ üC&ış T÷ üCOış T÷ üCÙ CEDULAê_ış T÷ ü÷ ış T÷ üÙ CEDULAış T÷ ü÷ ış %ü÷ ÷ ıùş T÷ üCÙ rechazosö ış %ü÷ ø ıùş %üí=øıùúş ÷ Ñü-ış ş
+ Fü÷ ış Bü-ış ş T÷ üC÷ &ış
+ Fü÷ ış ~ü÷ ÷ ıù¦ş T÷ üCOış T÷ ü÷ ış T÷ üÙ CEDULAış %ü÷  
+ıù|ş !ş ş& T÷  üCÙ CEDULA ÷ Ù EMPLBNLAö ış ş †üCÙ rechazos ÷ ö ış %ü÷  
+ıùş %üí=øıùìş ÷ Ñ÷  ş ş
+ Fü÷ ış	 Bü÷  ış ş ş %üCÙ PSTê¤
+ıùhş, %üCÙ oAplicacionbÙ Oğ
+ Cô ÷  ¡
+	ıùdş •Âüô ÷  Ù pst.dbcıÂş ş ş G(û PSTş
+ Fü÷ ış T÷ üC&ış T÷ üCOış T÷ üCÙ CEDULAê_ış T÷ ü÷ ış T÷ üÙ CEDULAış T÷ ü÷ ış %ü÷ ÷ ıù@ş T÷ üCÙ reclamosö ış %ü÷ ø ıùHş %üí=øıù3ş ÷ Ñü-ış ş
+ Fü÷ ış Bü-ış ş T÷ üC÷ &ış
+ Fü÷ ış ~ü÷ ÷ ıùßş T÷ üCOış T÷ ü÷ ış T÷ üÙ CEDULAış %ü÷  
+ıùµş !ş ş& T÷  üCÙ CEDULA ÷ Ù EMPLBNLAö ış ş †üCÙ reclamos ÷ ö ış %ü÷  
+ıù<ş %üí=øıù%ş ÷ Ñ÷  ş ş
+ Fü÷ ış	 Bü÷  ış ş ş %üCÙ PSTê¤
+ıù¡ş, %üCÙ oAplicacionbÙ Oğ
+ Cô ÷  ¡
+	ıùş •Âüô ÷  Ù pst.dbcıÂş ş ş G(û PSTş
+ Fü÷ ış T÷ üC&ış T÷ üCOış T÷ üCÙ CEDULAê_ış T÷ ü÷ ış T÷ üÙ CEDULAış T÷ ü÷ ış %ü÷ ÷ ıù{ş T÷ üCÙ	 devcontraö ış %ü÷ ø ıù‚ş %üí=øıùmş ÷ Ñü-ış ş
+ Fü÷ ış Bü-ış ş T÷ üC÷ &ış
+ Fü÷ ış ~ü÷ ÷ ıùş T÷ üCOış T÷ ü÷ ış T÷ üÙ CEDULAış %ü÷  
+ıùïş !ş ş& T÷  üCÙ CEDULA ÷ Ù EMPLBNLAö ış ş †üCÙ	 devcontra ÷ ö ış %ü÷  
+ıùwş %üí=øıù`ş ÷ Ñ÷  ş ş
+ Fü÷ ış	 Bü÷  ış ş ş %üCÙ PSTê¤
+ıùÜş, %üCÙ oAplicacionbÙ Oğ
+ Cô ÷  ¡
+	ıùØş •Âüô ÷  Ù pst.dbcıÂş ş ş G(û PSTş
+ Fü÷ ış T÷ üC&ış T÷ üCOış T÷ üCÙ CEDULAê_ış T÷ ü÷ ış T÷ üÙ CEDULAış T÷ ü÷ ış %ü÷ ÷ ıù¶ş T÷ üCÙ	 modcontraö ış %ü÷ ø ıù½ş %üí=øıù¨ş ÷ Ñü-ış ş
+ Fü÷ ış Bü-ış ş T÷ üC÷ &ış
+ Fü÷ ış ~ü÷ ÷ ıùTş T÷ üCOış T÷ ü÷ ış T÷ üÙ CEDULAış %ü÷  
+ıù*ş !ş ş& T÷  üCÙ CEDULA ÷ Ù EMPLBNLAö ış ş †üCÙ	 modcontra ÷ ö ış %ü÷  
+ıù²ş %üí=øıù›ş ÷ Ñ÷  ş ş
+ Fü÷ ış	 Bü÷  ış ş ş %üí=øıùÕş ÷ Ñ÷  ş ş
+ Fü÷ ış	 Bü÷  ış U"  LLRETVAL PCPARENTDBF PNPARENTREC
+ PCCHILDDBF
+ PNCHILDREC
+ PCPARENTID	 PCCHILDID PCPARENTEXPR PCCHILDEXPR PCRICURSORS PCRIWKAREAS PCRIOLDERROR PNERROR	 PCOLDDELE
+ PCOLDEXACT	 PCOLDTALK PCOLDCOMPAT PCOLDDBC GAERRORS
+ LCPARENTID LCOLDPARENTID LCCHILDWKAREA	 LCCHILDID LCOLDCHILDID LCPARENTWKAREA LCSTARTAREA CEDULA RIOPEN RIEND RIUPDATE RIREUSE OAPLICACION CDIRSISTEMA PSTí ®÷  ş T÷  üaış 5÷ ÷ ÷ ÷ ÷ ÷ ş 5÷ ÷ ş! JüÙ  ı(÷ ÷ ÷ ÷ ÷ ÷ ş Jüø ı(÷ ÷ ş %üí=øıùíş ›½ş' 5÷	 ÷
+ ÷ ÷ ÷ ÷ ÷ ÷ ÷ ş T÷ üCÙ TALKvış G2ş T÷ üCÙ DELETEDvış T÷ üCÙ EXACTvış T÷ üCÙ
+ COMPATIBLEvış GAş G ş Gş T÷	 üÙ  ış T÷
+ üÙ  ış T÷ üCÙ errorêış T÷ üø ış? 1û7 pnerror=rierror(ERROR(),message(),message(1),program())ş %üCû gaErrors(1)bÙ Uıùµş <÷ ş ş 7ö üøıüøış T÷ üCê–ış G(üÙ BASEBNLAış ş ®÷ ş ®÷ ş ®÷ ş ®÷ ş ®÷ ş T÷ üCWış T÷  üaış T÷ üCWış
+ Fü÷ ış T÷ üC&ış T÷ üCOış Jü÷ ı(÷ ÷ ş T÷ üÙ	 NUM_ENVIOış$ T÷ üCÙ enviodetÙ enviodetö ış %ü÷ ø ıùÛş %üí=øıùĞş ÷ Ñü-ış ş Bü-ış ş T÷ üC÷ &ış
+ Fü÷ ış	 Eü÷ ış ~+ü÷ ÷ ğ ÷  	ıùWş T÷ üCOış T÷ ü÷ ış T÷ üÙ	 NUM_ENVIOış T÷  üCö ış ş †üCÙ enviodet ÷ ö ış %ü÷  
+ıù´ş %üí=øıùş ÷ Ñ÷  ş ş
+ Fü÷ ış	 Bü÷  ış ş %üí=øıùÓş ÷ Ñ÷  ş ş
+ Fü÷ ış	 Bü÷  ış U  LLRETVAL PCPARENTDBF PNPARENTREC
+ PCCHILDDBF
+ PNCHILDREC
+ PCPARENTID	 PCCHILDID PCPARENTEXPR PCCHILDEXPR PCRICURSORS PCRIWKAREAS PCRIOLDERROR PNERROR	 PCOLDDELE
+ PCOLDEXACT	 PCOLDTALK PCOLDCOMPAT PCOLDDBC GAERRORS
+ LCPARENTID LCCHILDWKAREA LCPARENTWKAREA LLDELHEADERAREA LCSTARTAREA	 NUM_ENVIO RIOPEN RIEND RIDELETE RIREUSES ®÷  ş T÷  üaış 5÷ ÷ ÷ ÷ ÷ ÷ ş 5÷ ÷ ş! JüÙ  ı(÷ ÷ ÷ ÷ ÷ ÷ ş Jüø ı(÷ ÷ ş %üí=øıùíş ›½ş' 5÷	 ÷
+ ÷ ÷ ÷ ÷ ÷ ÷ ÷ ş T÷ üCÙ TALKvış G2ş T÷ üCÙ DELETEDvış T÷ üCÙ EXACTvış T÷ üCÙ
+ COMPATIBLEvış GAş G ş Gş T÷	 üÙ  ış T÷
+ üÙ  ış T÷ üCÙ errorêış T÷ üø ış? 1û7 pnerror=rierror(ERROR(),message(),message(1),program())ş %üCû gaErrors(1)bÙ Uıùµş <÷ ş ş 7ö üøıüøış T÷ üCê–ış G(üÙ BASEBNLAış ş ®÷ ş ®÷ ş ®÷ ş ®÷ ş ®÷ ş ®÷ ş ®÷ ş T÷ üCWış T÷  üaış T÷ üCWış
+ Fü÷ ış T÷ üC&ış T÷ üCOış T÷ üCÙ	 NUM_ENVIOê_ış T÷ ü÷ ış T÷ üÙ	 NUM_ENVIOış T÷ ü÷ ış %ü÷ ÷ ıùş T÷ üCÙ enviodetö ış %ü÷ ø ıùş %üí=øıùş ÷ Ñü-ış ş
+ Fü÷ ış Bü-ış ş T÷ üC÷ &ış
+ Fü÷ ış ~ü÷ ÷ ıù¹ş T÷ üCOış T÷ ü÷ ış T÷ üÙ	 NUM_ENVIOış %ü÷  
+ıù‹ş !ş ş* T÷  üCÙ	 NUM_ENVIO ÷ Ù	 ENVIOSTOTö ış ş †üCÙ enviodet ÷ ö ış %ü÷  
+ıùş %üí=øıùÿş ÷ Ñ÷  ş ş
+ Fü÷ ış	 Bü÷  ış ş ş %üí=øıù9ş ÷ Ñ÷  ş ş
+ Fü÷ ış	 Bü÷  ış U  LLRETVAL PCPARENTDBF PNPARENTREC
+ PCCHILDDBF
+ PNCHILDREC
+ PCPARENTID	 PCCHILDID PCPARENTEXPR PCCHILDEXPR PCRICURSORS PCRIWKAREAS PCRIOLDERROR PNERROR	 PCOLDDELE
+ PCOLDEXACT	 PCOLDTALK PCOLDCOMPAT PCOLDDBC GAERRORS
+ LCPARENTID LCOLDPARENTID LCCHILDWKAREA	 LCCHILDID LCOLDCHILDID LCPARENTWKAREA LCSTARTAREA	 NUM_ENVIO RIOPEN RIEND RIUPDATE RIREUSE ®÷  ş T÷  üaış 5÷ ÷ ÷ ÷ ÷ ÷ ş 5÷ ÷ ş! JüÙ  ı(÷ ÷ ÷ ÷ ÷ ÷ ş Jüø ı(÷ ÷ ş %üí=øıùíş ›½ş' 5÷	 ÷
+ ÷ ÷ ÷ ÷ ÷ ÷ ÷ ş T÷ üCÙ TALKvış G2ş T÷ üCÙ DELETEDvış T÷ üCÙ EXACTvış T÷ üCÙ
+ COMPATIBLEvış GAş G ş Gş T÷	 üÙ  ış T÷
+ üÙ  ış T÷ üCÙ errorêış T÷ üø ış? 1û7 pnerror=rierror(ERROR(),message(),message(1),program())ş %üCû gaErrors(1)bÙ Uıùµş <÷ ş ş 7ö üøıüøış T÷ üCê–ış G(üÙ BASEBNLAış ş ®÷ ş ®÷ ş ®÷ ş ®÷ ş ®÷ ş T÷ üCWış T÷  üaış T÷ üCWış
+ Fü÷ ış T÷ üC&ış T÷ üCOış Jü÷ ÷ ı(÷ ÷ ş T÷ üÙ FORMATO+ID_LINEAış$ T÷ üCÙ formato2Ù formato2ö ış %ü÷ ø ıùæş %üí=øıùÛş ÷ Ñü-ış ş Bü-ış ş T÷ üC÷ &ış
+ Fü÷ ış	 Eü÷ ış ~+ü÷ ÷ ÷ ğ ÷  	ıù~ş T÷ üCOış T÷ ü÷ ÷ ÷ ış& T÷ üÙ FORMATO+ID_LINEA+ID_CAMPOış T÷  üCö ış ş †üCÙ formato2 ÷ ö ış %ü÷  
+ıùÛş %üí=øıùÄş ÷ Ñ÷  ş ş
+ Fü÷ ış	 Bü÷  ış ş %üí=øıùúş ÷ Ñ÷  ş ş
+ Fü÷ ış	 Bü÷  ış U  LLRETVAL PCPARENTDBF PNPARENTREC
+ PCCHILDDBF
+ PNCHILDREC
+ PCPARENTID	 PCCHILDID PCPARENTEXPR PCCHILDEXPR PCRICURSORS PCRIWKAREAS PCRIOLDERROR PNERROR	 PCOLDDELE
+ PCOLDEXACT	 PCOLDTALK PCOLDCOMPAT PCOLDDBC GAERRORS
+ LCPARENTID LCCHILDWKAREA LCPARENTWKAREA LLDELHEADERAREA LCSTARTAREA FORMATO ID_LINEA RIOPEN RIEND ID_CAMPO RIDELETE RIREUSE… ®÷  ş T÷  üaış 5÷ ÷ ÷ ÷ ÷ ÷ ş 5÷ ÷ ş! JüÙ  ı(÷ ÷ ÷ ÷ ÷ ÷ ş Jüø ı(÷ ÷ ş %üí=øıùíş ›½ş' 5÷	 ÷
+ ÷ ÷ ÷ ÷ ÷ ÷ ÷ ş T÷ üCÙ TALKvış G2ş T÷ üCÙ DELETEDvış T÷ üCÙ EXACTvış T÷ üCÙ
+ COMPATIBLEvış GAş G ş Gş T÷	 üÙ  ış T÷
+ üÙ  ış T÷ üCÙ errorêış T÷ üø ış? 1û7 pnerror=rierror(ERROR(),message(),message(1),program())ş %üCû gaErrors(1)bÙ Uıùµş <÷ ş ş 7ö üøıüøış T÷ üCê–ış G(üÙ BASEBNLAış ş ®÷ ş ®÷ ş ®÷ ş ®÷ ş ®÷ ş ®÷ ş ®÷ ş T÷ üCWış T÷  üaış T÷ üCWış
+ Fü÷ ış T÷ üC&ış T÷ üCOış  T÷ üCÙ FORMATO+ID_LINEAê_ış T÷ ü÷ ış T÷ üÙ FORMATO+ID_LINEAış T÷ ü÷ ÷ ış %ü÷ ÷ ıùLş T÷ üCÙ formato2ö ış %ü÷ ø ıù-ş %üí=øıùş ÷ Ñü-ış ş
+ Fü÷ ış Bü-ış ş T÷ üC÷ &ış
+ Fü÷ ış ~ü÷ ÷ ÷ ıùëş T÷ üCOış T÷ ü÷ ÷ ÷ ış& T÷ üÙ FORMATO+ID_LINEA+ID_CAMPOış. T÷  üCÙ FORMATOC÷ øø
+\Ù formato1ö ış %ü÷  
+ıùçş !ş ş ş †üCÙ formato2 ÷ ö  ış %ü÷  
+ıùHş %üí=øıù1ş ÷ Ñ÷  ş ş
+ Fü÷ ış	 Bü÷  ış ş ş %üí=øıùkş ÷ Ñ÷  ş ş
+ Fü÷ ış	 Bü÷  ış U!  LLRETVAL PCPARENTDBF PNPARENTREC
+ PCCHILDDBF
+ PNCHILDREC
+ PCPARENTID	 PCCHILDID PCPARENTEXPR PCCHILDEXPR PCRICURSORS PCRIWKAREAS PCRIOLDERROR PNERROR	 PCOLDDELE
+ PCOLDEXACT	 PCOLDTALK PCOLDCOMPAT PCOLDDBC GAERRORS
+ LCPARENTID LCOLDPARENTID LCCHILDWKAREA	 LCCHILDID LCOLDCHILDID LCPARENTWKAREA LCSTARTAREA FORMATO ID_LINEA RIOPEN RIEND ID_CAMPO RIUPDATE RIREUSEn ®÷  ş T÷  üaış 5÷ ÷ ÷ ÷ ÷ ÷ ş 5÷ ÷ ş! JüÙ  ı(÷ ÷ ÷ ÷ ÷ ÷ ş Jüø ı(÷ ÷ ş %üí=øıùíş ›½ş' 5÷	 ÷
+ ÷ ÷ ÷ ÷ ÷ ÷ ÷ ş T÷ üCÙ TALKvış G2ş T÷ üCÙ DELETEDvış T÷ üCÙ EXACTvış T÷ üCÙ
+ COMPATIBLEvış GAş G ş Gş T÷	 üÙ  ış T÷
+ üÙ  ış T÷ üCÙ errorêış T÷ üø ış? 1û7 pnerror=rierror(ERROR(),message(),message(1),program())ş %üCû gaErrors(1)bÙ Uıùµş <÷ ş ş 7ö üøıüøış T÷ üCê–ış G(üÙ BASEBNLAış ş ®÷ ş ®÷ ş ®÷ ş ®÷ ş ®÷ ş ®÷ ş ®÷ ş T÷ üCWış T÷  üaış T÷ üCWış
+ Fü÷ ış T÷ üC&ış T÷ üCOış T÷ üCÙ
+ RELAINCLUSê_ış T÷ ü÷ ış T÷ üÙ
+ RELAINCLUSış T÷ ü÷ ış %ü÷ ÷ ıùş T÷ üCÙ contbnlaö ış %ü÷ ø ıùş %üí=øıùş ÷ Ñü-ış ş
+ Fü÷ ış Bü-ış ş T÷ üC÷ &ış
+ Fü÷ ış ~ü÷ ÷ ıù¼ş T÷ üCOış T÷ ü÷ ış T÷ üÙ
+ RELAINCLUSış %ü÷  
+ıùş !ş ş* T÷  üCÙ
+ RELAINCLUS ÷ Ù INCLBNLAö ış ş †üCÙ contbnla ÷ ö ış %ü÷  
+ıùş %üí=øıùş ÷ Ñ÷  ş ş
+ Fü÷ ış	 Bü÷  ış ş ş ®÷ ÷  ş
+ Fü÷ ış T÷ üC&ış T÷ üCOış T÷ üCÙ
+ RELAINCLUSê_ış T÷ üCÙ
+ FEC_VIGENCê_ış T÷ ü÷ ış T÷ üÙ
+ RELAINCLUSış T÷ ü÷ ış T÷  ü÷! ış %ü÷  ÷ ıù+ş T÷ üCÙ contbnlaö ış %ü÷ ø ıù+ş %üí=øıùş ÷ Ñü-ış ş
+ Fü÷ ış Bü-ış ş T÷ üC÷ &ış
+ Fü÷ ış ~ü÷ ÷ ıùÊş T÷ üCOış T÷ ü÷ ış T÷ üÙ
+ RELAINCLUSış %ü÷  
+ıùœş !ş ş* T÷  üCÙ
+ FEC_VIGENC ÷  Ù INCLBNLAö ış ş †üCÙ contbnla ÷ ö ış %ü÷  
+ıù'ş %üí=øıùş ÷ Ñ÷  ş ş
+ Fü÷ ış	 Bü÷  ış ş ş ®÷" ÷# ş
+ Fü÷ ış T÷ üC&ış T÷ üCOış T÷ üCÙ
+ RELAINCLUSê_ış T÷$ üCÙ COD_CASAê_ış T÷ ü÷ ış T÷ üÙ
+ RELAINCLUSış T÷ ü÷ ış T÷% ü÷& ış %ü÷% ÷$ ıù5ş T÷ üCÙ contbnlaö ış %ü÷ ø ıù7ş %üí=øıù"ş ÷ Ñü-ış ş
+ Fü÷ ış Bü-ış ş T÷ üC÷ &ış
+ Fü÷ ış ~ü÷ ÷ ıùÔş T÷ üCOış T÷ ü÷ ış T÷ üÙ
+ RELAINCLUSış %ü÷  
+ıù¨ş !ş ş( T÷  üCÙ COD_CASA ÷% Ù INCLBNLAö ış ş †üCÙ contbnla ÷ ö ış %ü÷  
+ıù1ş %üí=øıùş ÷ Ñ÷  ş ş
+ Fü÷ ış	 Bü÷  ış ş ş %üí=øıùTş ÷ Ñ÷  ş ş
+ Fü÷ ış	 Bü÷  ış U'  LLRETVAL PCPARENTDBF PNPARENTREC
+ PCCHILDDBF
+ PNCHILDREC
+ PCPARENTID	 PCCHILDID PCPARENTEXPR PCCHILDEXPR PCRICURSORS PCRIWKAREAS PCRIOLDERROR PNERROR	 PCOLDDELE
+ PCOLDEXACT	 PCOLDTALK PCOLDCOMPAT PCOLDDBC GAERRORS
+ LCPARENTID LCOLDPARENTID LCCHILDWKAREA	 LCCHILDID LCOLDCHILDID LCPARENTWKAREA LCSTARTAREA
+ RELAINCLUS RIOPEN RIEND RIUPDATE RIREUSE LDOLDPARENTFEC LDPARENTFEC
+ FEC_VIGENC LDOLDPARENTCASA LDPARENTCASA LCOLDPARENTCASA LCPARENTCASA COD_CASA ®÷  ş T÷  üaış 5÷ ÷ ÷ ÷ ÷ ÷ ş 5÷ ÷ ş! JüÙ  ı(÷ ÷ ÷ ÷ ÷ ÷ ş Jüø ı(÷ ÷ ş %üí=øıùíş ›½ş' 5÷	 ÷
+ ÷ ÷ ÷ ÷ ÷ ÷ ÷ ş T÷ üCÙ TALKvış G2ş T÷ üCÙ DELETEDvış T÷ üCÙ EXACTvış T÷ üCÙ
+ COMPATIBLEvış GAş G ş Gş T÷	 üÙ  ış T÷
+ üÙ  ış T÷ üCÙ errorêış T÷ üø ış? 1û7 pnerror=rierror(ERROR(),message(),message(1),program())ş %üCû gaErrors(1)bÙ Uıùµş <÷ ş ş 7ö üøıüøış T÷ üCê–ış G(üÙ BASEBNLAış ş ®÷ ş ®÷ ş ®÷ ş ®÷ ş ®÷ ş T÷ üCWış T÷  üaış T÷ üCWış
+ Fü÷ ış T÷ üC&ış T÷ üCOış Jü÷ ı(÷ ÷ ş T÷ üÙ
+ COD_SERVICış$ T÷ üCÙ emplbnlaÙ emplservö ış %ü÷ ø ıùÜş %üí=øıùÑş ÷ Ñü-ış ş Bü-ış ş T÷ üC÷ &ış T÷  üC÷ ÷ Š
+ış
+ Fü÷ ış T÷ üCOış T÷ ü÷ ış T÷ üÙ
+ UBI_SERVICış %ü÷  
+ıùƒş9 T÷ üCùÿÿÙ Delete restrict rule violated.Ù  Ù  ö ış ş †üCÙ emplbnla ÷ ö ış %ü÷  
+ıùàş %üí=øıùÉş ÷ Ñ÷  ş ş
+ Fü÷ ış	 Bü÷  ış ş %üí=øıùÿş ÷ Ñ÷  ş ş
+ Fü÷ ış	 Bü÷  ış U  LLRETVAL PCPARENTDBF PNPARENTREC
+ PCCHILDDBF
+ PNCHILDREC
+ PCPARENTID	 PCCHILDID PCPARENTEXPR PCCHILDEXPR PCRICURSORS PCRIWKAREAS PCRIOLDERROR PNERROR	 PCOLDDELE
+ PCOLDEXACT	 PCOLDTALK PCOLDCOMPAT PCOLDDBC GAERRORS
+ LCPARENTID LCCHILDWKAREA LCPARENTWKAREA LLDELHEADERAREA LCSTARTAREA
+ COD_SERVIC RIOPEN RIEND
+ UBI_SERVIC RIERROR RIREUSEV ®÷  ş T÷  üaış 5÷ ÷ ÷ ÷ ÷ ÷ ş 5÷ ÷ ş! JüÙ  ı(÷ ÷ ÷ ÷ ÷ ÷ ş Jüø ı(÷ ÷ ş %üí=øıùíş ›½ş' 5÷	 ÷
+ ÷ ÷ ÷ ÷ ÷ ÷ ÷ ş T÷ üCÙ TALKvış G2ş T÷ üCÙ DELETEDvış T÷ üCÙ EXACTvış T÷ üCÙ
+ COMPATIBLEvış GAş G ş Gş T÷	 üÙ  ış T÷
+ üÙ  ış T÷ üCÙ errorêış T÷ üø ış? 1û7 pnerror=rierror(ERROR(),message(),message(1),program())ş %üCû gaErrors(1)bÙ Uıùµş <÷ ş ş 7ö üøıüøış T÷ üCê–ış G(üÙ BASEBNLAış ş ®÷ ş ®÷ ş ®÷ ş ®÷ ş ®÷ ş ®÷ ş ®÷ ş T÷ üCWış T÷  üaış T÷ üCWış
+ Fü÷ ış T÷ üC&ış T÷ üCOış T÷ üCÙ
+ COD_SERVICê_ış T÷ ü÷ ış T÷ üÙ
+ COD_SERVICış T÷ ü÷ ış %ü÷ ÷ ıùş T÷ üCÙ emplbnlaö ış %ü÷ ø ıùş %üí=øıùş ÷ Ñü-ış ş
+ Fü÷ ış Bü-ış ş T÷ üC÷ &ış
+ Fü÷ ış ~ü÷ ÷ ıù¼ş T÷ üCOış T÷ ü÷ ış T÷ üÙ
+ UBI_SERVICış %ü÷  
+ıùş !ş ş* T÷  üCÙ
+ UBI_SERVIC ÷ Ù SERVBNLAö ış ş †üCÙ emplbnla ÷ ö ış %ü÷  
+ıùş %üí=øıùş ÷ Ñ÷  ş ş
+ Fü÷ ış	 Bü÷  ış ş ş %üí=øıù<ş ÷ Ñ÷  ş ş
+ Fü÷ ış	 Bü÷  ış U   LLRETVAL PCPARENTDBF PNPARENTREC
+ PCCHILDDBF
+ PNCHILDREC
+ PCPARENTID	 PCCHILDID PCPARENTEXPR PCCHILDEXPR PCRICURSORS PCRIWKAREAS PCRIOLDERROR PNERROR	 PCOLDDELE
+ PCOLDEXACT	 PCOLDTALK PCOLDCOMPAT PCOLDDBC GAERRORS
+ LCPARENTID LCOLDPARENTID LCCHILDWKAREA	 LCCHILDID LCOLDCHILDID LCPARENTWKAREA LCSTARTAREA
+ COD_SERVIC RIOPEN RIEND
+ UBI_SERVIC RIUPDATE RIREUSE RIDELETE,     ÿÿ RIUPDATEî     ÿÿ rierror>    ÿÿ riopen    ÿÿ riendÑ    ÿÿ rireuseâ	    ÿÿ __RI_DELETE_contbnlaT
+    ÿÿ __RI_UPDATE_contbnlaî    ÿÿ __RI_DELETE_emplbnla¼    ÿÿ __RI_UPDATE_emplbnla¤(    ÿÿ __RI_DELETE_enviostot">    ÿÿ __RI_UPDATE_enviostotkC    ÿÿ __RI_DELETE_formato11I    ÿÿ __RI_UPDATE_formato1³N    ÿÿ __RI_UPDATE_inclbnla½T    ÿÿ __RI_DELETE_servbnla_    ÿÿ __RI_UPDATE_servbnla‘d    ÿÿ3 q ± Á±  Ñ A Ñ‘ A A A ¡ ‘ 2 ñ q ± A±  1q 1Ñ‘ A A A ¡ ‘ 2 1± 1±ÑA ‘‘‘‘Ñ 1ÂA ‘‘‘‘‘‘‘‘‘ 3 ± rÑ ±q¡A A Ñ A Á  Á R áA  Ñ A  R1A Ñ A A ¡ 3 q ñ Ñ Q  a A a A ñ   ±A Ñ¡QA 1a A Aa A 1a A 1a A Ñ ñ a Á A q 3 ² Rq 4 q ± ±± Q r1a aA‘a a a Ñ Ñ QÑ ññq A 1Ñ AA q q q q q Á ± Á ¡ Á Á ‘qq± A q A ñ ¡ ‘ Á Qqá A ¡á ± A ¡ ‘ A ± A ¡ ‘ 5 r ± ±± Q r1a aA‘a a a Ñ Ñ QÑ ññq A 1Ñ AA q q q q q q q Á ± Á ¡ Á Á ¡Ñ qQ‘± A ¡ q A ñ ¡ ¡Á QqÑá A A ñá A A á A A A ‘á ± A ¡ ‘ A A ¡ Á Á ¡Ñ qQ‘± A ¡ q A ñ ¡ ¡Á QqÑá A A ñá A A á A A A ‘á ± A ¡ ‘ A A ¡ Á Á ¡Ñ qQ¡± A ¡ q A ñ ¡ ¡Á QqÑá A A ñá A A á A A A ¡á ± A ¡ ‘ A A ¡ Á Á ¡Ñ qQ‘± A ¡ q A ñ ¡ ¡Á QqÑá A A ñá A A á A A A ‘á ± A ¡ ‘ A A ± A ¡ ‘ 6 q ± ±± Q r1a aA‘a a a Ñ Ñ QÑ ññq A 1Ñ AA q q q q q Á ± Á ¡ Á Á 1A± A q A ñ 1¡ Á Ñ 1á ‘A ‘á ± A ¡ ‘ A ¡ Á Á 1a± A q A ñ ¡ ‘ ‘Á Ñ 1á A ‘á ± A ¡ ‘ A ¡ Á Á 1a± A q A ñ ¡ ‘ ‘Á Ñ 1á A ‘á ± A ¡ ‘ A ¡ Á Á 1A± A q A ñ ¡ ‘ ‘Á Ñ 1á A ‘á ± A ¡ ‘ A ± A ¡ ‘ 5 r ± ±± Q r1a aA‘a a a Ñ Ñ QÑ ññq A 1Ñ AA q q q q q q q Á ± Á ¡ Á Á aÑ 1Ñ q± A ¡ q A ñ ¡ !Á Ñ 1á A A aA qá ± A ¡ ‘ A A ¡ Á Á aÑ 1Ñ ‘± A ¡ q A ñ ¡ !Á Ñ 1á A A aA ‘á ± A ¡ ‘ A A ¡ Á Á aÑ 1Ñ ¡± A ¡ q A ñ ¡ !Á Ñ 1á A A aA ¡á ± A ¡ ‘ A A ¡ Á Á aÑ 1Ñ ‘± A ¡ q A ñ ¡ !Á Ñ 1á A A aA ‘á ± A ¡ ‘ A A ¢ Á Á aÑ 1Ñ ‘± A ¡ q A ñ ¡ !Á Ñ 1á A A aA ‘á ± A ¡ ‘ A A ¡ Á Á aÑ 1Ñ ‘± A ¡ q A ñ ¡ !Á Ñ 1á A A aA ‘á ± A ¡ ‘ A A BÁ‘A A Á ¡ Á Á aÑ 1Ñ ‘± A ¡ q A ñ ¡ !Á Ñ 1á A A aA ‘á ± A ¡ ‘ A A BÁ‘A A Á ¡ Á Á aÑ 1Ñ ¡± A ¡ q A ñ ¡ !Á Ñ 1á A A aA ¡á ± A ¡ ‘ A A BÁ‘A A Á ¡ Á Á aÑ 1Ñ ¡± A ¡ q A ñ ¡ !Á Ñ 1á A A aA ¡á ± A ¡ ‘ A A ± A ¡ ‘ 6 q ± ±± Q r1a aA‘a a a Ñ Ñ QÑ ññq A 1Ñ AA q q q q q Á ± Á ¡ Á Á aA± A q A ñ ¡ ‘ ‘Á Ñ aá A ‘á ± A ¡ ‘ A ± A ¡ ‘ 5 r ± ±± Q r1a aA‘a a a Ñ Ñ QÑ ññq A 1Ñ AA q q q q q q q Á ± Á ¡ Á Á ‘Ñ aÑ ‘± A ¡ q A ñ ¡ !Á Ñ aá A A ¡A ‘á ± A ¡ ‘ A A ± A ¡ ‘ 6 q ± ±± Q r1a aA‘a a a Ñ Ñ QÑ ññq A 1Ñ AA q q q q q Á ± Á ¡ Á Á QÑA± A q A ñ ¡ ‘ ÑÁ Qaá A ‘á ± A ¡ ‘ A ± A ¡ ‘ 5 r ± ±± Q r1a aA‘a a a Ñ Ñ QÑ ññq A 1Ñ AA q q q q q q q Á ± Á ¡ Á Á Ñ Ñ‘± A ¡ q A ñ ¡ aÁ Qaáá A A A ‘á ± A ¡ ‘ A A ± A ¡ ‘ 5 r ± ±± Q r1a aA‘a a a Ñ Ñ QÑ ññq A 1Ñ AA q q q q q q q Á ± Á ¡ Á Á ¡Ñ qÑ ‘± A ¡ q A ñ ¡ !Á Ñ qá A A ¡A ‘á ± A ¡ ‘ A A ² ¡ Á Á ¡¡Ñ qÑ Ñ ‘± A ¡ q A ñ ¡ !Á Ñ qá A A ¡A ‘á ± A ¡ ‘ A A ² ¡ Á Á ¡Ñ qÑ Ñ ‘± A ¡ q A ñ ¡ !Á Ñ qá A A A ‘á ± A ¡ ‘ A A ± A ¡ ‘ 6 q ± ±± Q r1a aA‘a a a Ñ Ñ QÑ ññq A 1Ñ AA q q q q q Á ± Á ¡ Á Á qA± A q A ñ 1¡ Á Ñ qá ‘A ‘á ± A ¡ ‘ A ± A ¡ ‘ 5 r ± ±± Q r1a aA‘a a a Ñ Ñ QÑ ññq A 1Ñ AA q q q q q q q Á ± Á ¡ Á Á ¡Ñ qÑ ‘± A ¡ q A ñ ¡ !Á Ñ qá A A ¡A ‘á ± A ¡ ‘ A A ± A ¡ ‘ 3                    ]   ›        ±  ë     $      )  (   >   =  '  E   c   :  Í  q   ‰   â    ™      A  ¤  ¢   Õ   Æ  ½6  ï   ²  ß6  "I  Ó  Q  DI  Ov  w  Ô  rv  |      Ÿ  §Š  S  m  ÉŠ  ”  «  µ  )”  =Ÿ  ø    _Ÿ  X³  O  ¥  z³  ¼  ÷  í  £¼  jÇ  D   )   İy                  
